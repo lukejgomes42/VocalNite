@@ -1,100 +1,84 @@
-/*
-  ==============================================================================
-
-    This file contains the basic startup code for a JUCE application.
-
-  ==============================================================================
-*/
-
 #include <JuceHeader.h>
 #include "MainComponent.h"
 
 //==============================================================================
-class VocalNiteApplication  : public juce::JUCEApplication
+// Standalone MainWindow class
+class MainWindow : public juce::DocumentWindow
 {
 public:
-    //==============================================================================
-    VocalNiteApplication() {}
-
-    const juce::String getApplicationName() override       { return ProjectInfo::projectName; }
-    const juce::String getApplicationVersion() override    { return ProjectInfo::versionString; }
-    bool moreThanOneInstanceAllowed() override             { return true; }
-
-    //==============================================================================
-    void initialise (const juce::String& commandLine) override
+    MainWindow(juce::String name)
+        : DocumentWindow(name,
+            juce::Colours::black, // background color
+            0)                     // no buttons
     {
-        // This method is where you should put your application's initialisation code..
+        setUsingNativeTitleBar(false);      // hide OS title bar
+        setContentOwned(new MainComponent(), true);
 
-        mainWindow.reset (new MainWindow (getApplicationName()));
+        // Fixed starting size
+        int startWidth = 600;
+        int startHeight = 400;
+
+        // Prevent resizing completely
+        setResizable(false, false);
+
+        // Center window on main display
+        auto screenArea = juce::Desktop::getInstance().getDisplays().getMainDisplay().userArea;
+
+        // Clamp size to screen if needed
+        if (startWidth > screenArea.getWidth())  startWidth = screenArea.getWidth();
+        if (startHeight > screenArea.getHeight()) startHeight = screenArea.getHeight();
+
+        setBounds((screenArea.getWidth() - startWidth) / 2,
+            (screenArea.getHeight() - startHeight) / 2,
+            startWidth,
+            startHeight);
+
+
+
+        setVisible(true);
+    }
+
+    // Prevent user from resizing by forcing size
+    void resized() override
+    {
+        auto r = getBounds();
+        r.setSize(600, 400);  // force fixed size
+        setBounds(r);
+        DocumentWindow::resized();
+    }
+
+    void closeButtonPressed() override
+    {
+        juce::JUCEApplication::getInstance()->systemRequestedQuit();
+    }
+
+private:
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainWindow)
+};
+
+//==============================================================================
+// Main JUCE application class
+class HelloWorldApplication : public juce::JUCEApplication
+{
+public:
+    HelloWorldApplication() {}
+
+    const juce::String getApplicationName() override { return ProjectInfo::projectName; }
+    const juce::String getApplicationVersion() override { return ProjectInfo::versionString; }
+    bool moreThanOneInstanceAllowed() override { return true; }
+
+    void initialise(const juce::String&) override
+    {
+        mainWindow = std::make_unique<MainWindow>(getApplicationName());
     }
 
     void shutdown() override
     {
-        // Add your application's shutdown code here..
-
-        mainWindow = nullptr; // (deletes our window)
+        mainWindow = nullptr; // deletes our window
     }
 
-    //==============================================================================
-    void systemRequestedQuit() override
-    {
-        // This is called when the app is being asked to quit: you can ignore this
-        // request and let the app carry on running, or call quit() to allow the app to close.
-        quit();
-    }
-
-    void anotherInstanceStarted (const juce::String& commandLine) override
-    {
-        // When another instance of the app is launched while this one is running,
-        // this method is invoked, and the commandLine parameter tells you what
-        // the other instance's command-line arguments were.
-    }
-
-    //==============================================================================
-    /*
-        This class implements the desktop window that contains an instance of
-        our MainComponent class.
-    */
-    class MainWindow    : public juce::DocumentWindow
-    {
-    public:
-        MainWindow (juce::String name)
-            : DocumentWindow (name,
-                              juce::Desktop::getInstance().getDefaultLookAndFeel()
-                                                          .findColour (juce::ResizableWindow::backgroundColourId),
-                              DocumentWindow::allButtons)
-        {
-            setUsingNativeTitleBar (true);
-            setContentOwned (new MainComponent(), true);
-
-           #if JUCE_IOS || JUCE_ANDROID
-            setFullScreen (true);
-           #else
-            setResizable (true, true);
-            centreWithSize (getWidth(), getHeight());
-           #endif
-
-            setVisible (true);
-        }
-
-        void closeButtonPressed() override
-        {
-            // This is called when the user tries to close this window. Here, we'll just
-            // ask the app to quit when this happens, but you can change this to do
-            // whatever you need.
-            JUCEApplication::getInstance()->systemRequestedQuit();
-        }
-
-        /* Note: Be careful if you override any DocumentWindow methods - the base
-           class uses a lot of them, so by overriding you might break its functionality.
-           It's best to do all your work in your content component instead, but if
-           you really have to override any DocumentWindow methods, make sure your
-           subclass also calls the superclass's method.
-        */
-
-    private:
-        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainWindow)
-    };
+    void systemRequestedQuit() override { quit(); }
+    void anotherInstanceStarted(const juce::String&) override {}
 
 private:
     std::unique_ptr<MainWindow> mainWindow;
@@ -102,4 +86,4 @@ private:
 
 //==============================================================================
 // This macro generates the main() routine that launches the app.
-START_JUCE_APPLICATION (VocalNiteApplication)
+START_JUCE_APPLICATION(HelloWorldApplication)
