@@ -1,8 +1,11 @@
 #include "MainComponent.h"
+#include "DatabaseManager.h"
 
 //==============================================================================
 MainComponent::MainComponent()
 {
+    DatabaseManager::get().testDB();
+
     setSize(600, 400);
 
     // Dark theme background
@@ -134,11 +137,38 @@ void MainComponent::showAuthDialog(const juce::String& type)
 
     dialog->enterModalState(true,
         juce::ModalCallbackFunction::create(
-            [](int result)
+            [dialog, type](int result)
             {
-                // handle result if needed
+                if (result == 1)
+                {
+                    juce::String username = dialog->getTextEditorContents("username");
+                    juce::String password = dialog->getTextEditorContents("password");
+
+                    if (username.isEmpty() || password.isEmpty())
+                    {
+                        DBG("Username or password is empty");
+                        return;
+                    }
+
+                    if (type == "Sign Up")
+                    {
+                        bool success = DatabaseManager::get().signUp(username, password, "standard");
+                        if (success)
+                            DBG("Account created successfully!");
+                        else
+                            DBG("Sign up failed - username may already exist");
+                    }
+                    else if (type == "Login")
+                    {
+                        bool success = DatabaseManager::get().login(username, password);
+                        if (success)
+                            DBG("Logged in successfully!");
+                        else
+                            DBG("Login failed - incorrect username or password");
+                    }
+                }
             }),
-            true);
+        true);
 }
 
 //==============================================================================
