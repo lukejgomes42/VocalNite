@@ -1,7 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
-#include "StarSystem.h"
-#include "GlowLines.h"
+#include "../Animation/StarSystem.h"
+#include "../Animation/GlowLines.h"
 
 //==============================================================================
 /*
