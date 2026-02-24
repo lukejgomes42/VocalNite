@@ -7,6 +7,8 @@ MainComponent::MainComponent()
     DatabaseManager::get().testDB();
 
     setSize(600, 400);
+    starSystem.setBounds(getWidth(), getHeight());
+    glowLines.setBounds(getWidth(), getHeight());
 
     // Dark theme background
     getLookAndFeel().setColour(juce::ResizableWindow::backgroundColourId, juce::Colours::black);
@@ -34,24 +36,6 @@ MainComponent::MainComponent()
     signupButton.addMouseListener(this, true);
     loginButton.addMouseListener(this, true);
 
-    // Glow lines setup
-    int numLines = 5;
-    float spacing = getHeight() / (float)numLines;
-    lineOffsets.clear();
-    for (int i = 0; i < numLines; ++i)
-        lineOffsets.add(i * spacing);
-
-    // Stars setup (independent of lines)
-    for (int i = 0; i < 50; ++i)
-    {
-        Star s;
-        s.x = juce::Random::getSystemRandom().nextFloat() * getWidth();
-        s.y = juce::Random::getSystemRandom().nextFloat() * getHeight();
-        s.size = 2.0f + juce::Random::getSystemRandom().nextFloat() * 4.0f; // 2–6 px
-        s.alpha = 0.7f + juce::Random::getSystemRandom().nextFloat() * 0.3f; // initial twinkle
-        stars.add(s);
-    }
-
     // Start animation timer (60 FPS)
     startTimer(1000 / 60);
 }
@@ -64,20 +48,8 @@ void MainComponent::paint(juce::Graphics& g)
     // Background
     g.fillAll(juce::Colours::black); // dark background
 
-    // Draw stars (bright, twinkling)
-    for (auto& s : stars)
-    {
-        g.setColour(juce::Colours::white.withAlpha(s.alpha));
-        g.fillEllipse(s.x, s.y, s.size, s.size);
-    }
-
-    // Glow lines
-    g.setColour(juce::Colours::purple.withMultipliedAlpha(0.2f));
-    for (auto offset : lineOffsets)
-    {
-        float y = fmod(offset + glowPhase, (float)getHeight());
-        g.drawLine(0.0f, y, (float)getWidth(), y, 2.0f);
-    }
+    starSystem.draw(g);
+    glowLines.draw(g);
 
     // Title glow effect
     g.setFont(juce::Font(50.0f, juce::Font::bold));
@@ -103,22 +75,8 @@ void MainComponent::resized()
 
 void MainComponent::timerCallback()
 {
-    // Animate glow lines
-    glowPhase += 1.0f; // speed of lines
-    if (glowPhase > getHeight())
-        glowPhase = 0.0f;
-
-    // Animate stars: move slowly down and wrap around
-    for (auto& s : stars)
-    {
-        s.y += 0.3f; // slower than lines
-        if (s.y > getHeight())
-            s.y = 0.0f; // wrap to top
-
-        // Twinkle alpha
-        s.alpha = 0.5f + 0.5f * std::sin(glowPhase * 0.01f + s.x + s.y);
-    }
-
+    starSystem.update(0.0f, getHeight());
+    glowLines.update();
     repaint();
 }
 

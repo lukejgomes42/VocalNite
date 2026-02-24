@@ -64,9 +64,9 @@ public:
     HelloWorldApplication() {}
 
     const juce::String getApplicationName() override { return ProjectInfo::projectName; }
+
     const juce::String getApplicationVersion() override { return ProjectInfo::versionString; }
     bool moreThanOneInstanceAllowed() override { return true; }
-
     void initialise(const juce::String&) override
     {
         mainWindow = std::make_unique<MainWindow>(getApplicationName());

@@ -40,16 +40,28 @@
       </GROUP>
     </GROUP>
     <GROUP id="{69EC30F4-DBF3-583D-B33A-8D575564E6E7}" name="Source">
+      <GROUP id="{9BC39F5D-4A9D-A7C9-5A15-0FFF1D645DC9}" name="UI">
+        <FILE id="C0vN9V" name="test2.cpp" compile="1" resource="0" file="Source/test2.cpp"/>
+        <FILE id="a4NHvd" name="test2.h" compile="0" resource="0" file="Source/test2.h"/>
+      </GROUP>
+      <GROUP id="{1EE54313-8681-19E4-ED29-BE2DFD003258}" name="Animation">
+        <FILE id="e3e3iE" name="GlowLines.cpp" compile="1" resource="0" file="Source/GlowLines.cpp"/>
+        <FILE id="N5ejZC" name="GlowLines.h" compile="0" resource="0" file="Source/GlowLines.h"/>
+        <FILE id="eRhRSe" name="StarSystem.cpp" compile="1" resource="0" file="Source/StarSystem.cpp"/>
+        <FILE id="B7A4DT" name="StarSystem.h" compile="0" resource="0" file="Source/StarSystem.h"/>
+      </GROUP>
       <GROUP id="{6D3B731B-AF66-308F-344C-8D3826448C3D}" name="Database">
         <FILE id="Jwq9kP" name="DatabaseManager.cpp" compile="1" resource="0"
               file="Source/Database/DatabaseManager.cpp"/>
         <FILE id="ZXLpCr" name="DatabaseManager.h" compile="0" resource="0"
               file="Source/Database/DatabaseManager.h"/>
       </GROUP>
-      <FILE id="c1ZxsW" name="Main.cpp" compile="1" resource="0" file="Source/Main.cpp"/>
-      <FILE id="Yc6Jcb" name="MainComponent.h" compile="0" resource="0" file="Source/MainComponent.h"/>
-      <FILE id="jVCm5V" name="MainComponent.cpp" compile="1" resource="0"
-            file="Source/MainComponent.cpp"/>
+      <GROUP id="{CCA3DA6D-0CF3-4AD1-4AF8-72A482E3F308}" name="Main">
+        <FILE id="jVCm5V" name="MainComponent.cpp" compile="1" resource="0"
+              file="Source/MainComponent.cpp"/>
+        <FILE id="Yc6Jcb" name="MainComponent.h" compile="0" resource="0" file="Source/MainComponent.h"/>
+        <FILE id="c1ZxsW" name="Main.cpp" compile="1" resource="0" file="Source/Main.cpp"/>
+      </GROUP>
     </GROUP>
   </MAINGROUP>
   <MODULES>

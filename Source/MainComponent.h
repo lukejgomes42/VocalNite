@@ -1,5 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
+#include "StarSystem.h"
+#include "GlowLines.h"
 
 //==============================================================================
 /*
@@ -31,17 +33,9 @@ private:
     void showAuthDialog(const juce::String& type);
 
     // Animation
-    juce::Array<float> lineOffsets;
-    float glowPhase = 0.0f;
-
-    // Animation for stars
-    struct Star
-    {
-        float x, y;
-        float size;
-        float alpha;
-    };
-    juce::Array<Star> stars;
+    GlowLines glowLines { 5 };
+    StarSystem starSystem { 50 };
+    
 
     void timerCallback() override;
 
