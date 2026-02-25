@@ -46,10 +46,10 @@
         <FILE id="ZXLpCr" name="DatabaseManager.h" compile="0" resource="0"
               file="Source/Database/DatabaseManager.h"/>
       </GROUP>
-      <FILE id="c1ZxsW" name="Main.cpp" compile="1" resource="0" file="Source/Main.cpp"/>
-      <FILE id="Yc6Jcb" name="MainComponent.h" compile="0" resource="0" file="Source/MainComponent.h"/>
-      <FILE id="jVCm5V" name="MainComponent.cpp" compile="1" resource="0"
+      <FILE id="V216iW" name="Main.cpp" compile="1" resource="0" file="Source/Main.cpp"/>
+      <FILE id="kqHz4M" name="MainComponent.cpp" compile="1" resource="0"
             file="Source/MainComponent.cpp"/>
+      <FILE id="NHhrvi" name="MainComponent.h" compile="0" resource="0" file="Source/MainComponent.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>
