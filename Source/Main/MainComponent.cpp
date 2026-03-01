@@ -115,7 +115,7 @@ void MainComponent::showAuthDialog(const juce::String& type)
                         {
                             DBG("Account created successfully!");
                             if (onAuthenticationSuccess)
-                                onAuthenticationSuccess();
+                                onAuthenticationSuccess(username);
                         }
                         else
                         {
@@ -129,7 +129,7 @@ void MainComponent::showAuthDialog(const juce::String& type)
                         {
                             DBG("Logged in successfully!");
                             if (onAuthenticationSuccess)
-                                onAuthenticationSuccess();
+                                onAuthenticationSuccess(username);
                         }
                         else
                         {

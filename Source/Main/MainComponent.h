@@ -17,7 +17,7 @@ public:
     MainComponent();
     ~MainComponent() override;
 
-    std::function<void()> onAuthenticationSuccess;
+    std::function<void(const juce::String& username)> onAuthenticationSuccess;
 
     //==============================================================================
     void paint(juce::Graphics&) override;

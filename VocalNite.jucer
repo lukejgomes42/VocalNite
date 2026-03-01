@@ -41,8 +41,14 @@
     </GROUP>
     <GROUP id="{69EC30F4-DBF3-583D-B33A-8D575564E6E7}" name="Source">
       <GROUP id="{9BC39F5D-4A9D-A7C9-5A15-0FFF1D645DC9}" name="UI">
-        <FILE id="dPxz7r" name="test2.cpp" compile="1" resource="0" file="Source/UI/test2.cpp"/>
-        <FILE id="nZz1G4" name="test2.h" compile="0" resource="0" file="Source/UI/test2.h"/>
+        <FILE id="FDrUcI" name="ProjectManagerComponent.cpp" compile="1" resource="0"
+              file="Source/UI/ProjectManagerComponent.cpp"/>
+        <FILE id="kXYBBS" name="ProjectManagerComponent.h" compile="0" resource="0"
+              file="Source/UI/ProjectManagerComponent.h"/>
+        <FILE id="AVY4os" name="TopBarComponent.cpp" compile="1" resource="0"
+              file="Source/UI/TopBarComponent.cpp"/>
+        <FILE id="xHahFa" name="TopBarComponent.h" compile="0" resource="0"
+              file="Source/UI/TopBarComponent.h"/>
       </GROUP>
       <GROUP id="{1EE54313-8681-19E4-ED29-BE2DFD003258}" name="Animation">
         <FILE id="iZBlAS" name="GlowLines.cpp" compile="1" resource="0" file="Source/Animation/GlowLines.cpp"/>

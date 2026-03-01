@@ -1,6 +1,6 @@
 #include <JuceHeader.h>
 #include "MainComponent.h"
-#include "../UI/test2.h"
+#include "../UI/ProjectManagerComponent.h"
 
 //==============================================================================
 // Standalone MainWindow class
@@ -10,40 +10,25 @@ public:
     MainWindow(juce::String name)
         : DocumentWindow(name,
             juce::Colours::black, // background color
-            DocumentWindow::closeButton)                     // no buttons
+            DocumentWindow::closeButton)
     {
-        setUsingNativeTitleBar(false);      // hide OS title bar
+        setUsingNativeTitleBar(false);
         setResizeLimits(600, 400, 600, 400);
-        auto* mainComp = new MainComponent();
-
-        mainComp->onAuthenticationSuccess = [this]()
-            {
-                setContentOwned(new ProjectManagerComponent(), true);
-            };
-
-        setContentOwned(mainComp, true);
-
-
-        // Fixed starting size
-        int startWidth = 600;
-        int startHeight = 400;
-
-        // Prevent resizing completely
         setResizable(false, false);
 
-        // Center window on main display
+        // Center and size code stays the same...
         auto screenArea = juce::Desktop::getInstance().getDisplays().getMainDisplay().userArea;
-
-        // Clamp size to screen if needed
-        if (startWidth > screenArea.getWidth())  startWidth = screenArea.getWidth();
+        int startWidth = 600;
+        int startHeight = 400;
+        if (startWidth > screenArea.getWidth()) startWidth = screenArea.getWidth();
         if (startHeight > screenArea.getHeight()) startHeight = screenArea.getHeight();
-
         setBounds((screenArea.getWidth() - startWidth) / 2,
             (screenArea.getHeight() - startHeight) / 2,
             startWidth,
             startHeight);
 
-
+        // <<< Replace the old setContentOwned >>> 
+        showLoginScreen();
 
         setVisible(true);
     }
@@ -68,6 +53,32 @@ public:
     }
 
 private:
+    void showLoginScreen()
+    {
+        auto* login = new MainComponent();
+
+        login->onAuthenticationSuccess = [this](const juce::String& username)
+            {
+                showProjectManager(username); // pass the logged-in username
+            };
+
+        setContentOwned(login, true);
+    }
+
+    void showProjectManager(const juce::String& username)
+    {
+        auto* pm = new ProjectManagerComponent();
+
+        // Set the username dynamically
+        pm->setUsername(username);
+
+        pm->onLogout = [this]()
+            {
+                showLoginScreen();
+            };
+
+        setContentOwned(pm, true);
+    }
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainWindow)
 };
 
