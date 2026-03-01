@@ -95,7 +95,7 @@ void MainComponent::showAuthDialog(const juce::String& type)
 
     dialog->enterModalState(true,
         juce::ModalCallbackFunction::create(
-            [dialog, type](int result)
+            [this, dialog, type] (int result)
             {
                 if (result == 1)
                 {
@@ -112,17 +112,29 @@ void MainComponent::showAuthDialog(const juce::String& type)
                     {
                         bool success = DatabaseManager::get().signUp(username, password, "standard");
                         if (success)
+                        {
                             DBG("Account created successfully!");
+                            if (onAuthenticationSuccess)
+                                onAuthenticationSuccess();
+                        }
                         else
+                        {
                             DBG("Sign up failed - username may already exist");
+                        }
                     }
                     else if (type == "Login")
                     {
                         bool success = DatabaseManager::get().login(username, password);
                         if (success)
+                        {
                             DBG("Logged in successfully!");
+                            if (onAuthenticationSuccess)
+                                onAuthenticationSuccess();
+                        }
                         else
+                        {
                             DBG("Login failed - incorrect username or password");
+                        }
                     }
                 }
             }),

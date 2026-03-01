@@ -1,5 +1,6 @@
 #include <JuceHeader.h>
 #include "MainComponent.h"
+#include "../UI/test2.h"
 
 //==============================================================================
 // Standalone MainWindow class
@@ -13,7 +14,15 @@ public:
     {
         setUsingNativeTitleBar(false);      // hide OS title bar
         setResizeLimits(600, 400, 600, 400);
-        setContentOwned(new MainComponent(), true);
+        auto* mainComp = new MainComponent();
+
+        mainComp->onAuthenticationSuccess = [this]()
+            {
+                setContentOwned(new ProjectManagerComponent(), true);
+            };
+
+        setContentOwned(mainComp, true);
+
 
         // Fixed starting size
         int startWidth = 600;
