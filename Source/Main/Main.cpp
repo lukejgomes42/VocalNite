@@ -9,9 +9,10 @@ public:
     MainWindow(juce::String name)
         : DocumentWindow(name,
             juce::Colours::black, // background color
-            0)                     // no buttons
+            DocumentWindow::closeButton)                     // no buttons
     {
         setUsingNativeTitleBar(false);      // hide OS title bar
+        setResizeLimits(600, 400, 600, 400);
         setContentOwned(new MainComponent(), true);
 
         // Fixed starting size
@@ -47,6 +48,11 @@ public:
         DocumentWindow::resized();
     }
 
+    void mouseMove(const juce::MouseEvent& e) override
+    {
+        setMouseCursor(juce::MouseCursor::NormalCursor);
+    }
+
     void closeButtonPressed() override
     {
         juce::JUCEApplication::getInstance()->systemRequestedQuit();
@@ -58,15 +64,15 @@ private:
 
 //==============================================================================
 // Main JUCE application class
-class HelloWorldApplication : public juce::JUCEApplication
+class VocalNite : public juce::JUCEApplication
 {
 public:
-    HelloWorldApplication() {}
+    VocalNite() {}
 
     const juce::String getApplicationName() override { return ProjectInfo::projectName; }
-
     const juce::String getApplicationVersion() override { return ProjectInfo::versionString; }
     bool moreThanOneInstanceAllowed() override { return true; }
+
     void initialise(const juce::String&) override
     {
         mainWindow = std::make_unique<MainWindow>(getApplicationName());
@@ -86,4 +92,4 @@ private:
 
 //==============================================================================
 // This macro generates the main() routine that launches the app.
-START_JUCE_APPLICATION(HelloWorldApplication)
+START_JUCE_APPLICATION(VocalNite)
