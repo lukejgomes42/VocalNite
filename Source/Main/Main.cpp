@@ -1,6 +1,7 @@
 #include <JuceHeader.h>
 #include "MainComponent.h"
 #include "../UI/ProjectManagerComponent.h"
+#include "../DAW/DAWComponent.h"
 
 //==============================================================================
 // Standalone MainWindow class
@@ -36,9 +37,6 @@ public:
     // Prevent user from resizing by forcing size
     void resized() override
     {
-        auto r = getBounds();
-        r.setSize(600, 400);  // force fixed size
-        setBounds(r);
         DocumentWindow::resized();
     }
 
@@ -68,16 +66,24 @@ private:
     void showProjectManager(const juce::String& username)
     {
         auto* pm = new ProjectManagerComponent();
-
-        // Set the username dynamically
         pm->setUsername(username);
-
         pm->onLogout = [this]()
             {
                 showLoginScreen();
             };
-
+        pm->onOpenProject = [this](const juce::String& projectName)
+            {
+                showDAWComponent(projectName);
+            };
         setContentOwned(pm, true);
+    }
+
+    void showDAWComponent(const juce::String& projectName)
+    {
+        setResizeLimits(1280, 720, 1280, 720);
+        auto* daw = new DAWComponent(projectName);
+        setContentOwned(daw, true);
+        centreWithSize(1280, 720);
     }
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainWindow)
 };

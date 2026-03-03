@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 #include "DatabaseManager.h"
+#include "../DAW/DAWComponent.h"
 
 //==============================================================================
 MainComponent::MainComponent()

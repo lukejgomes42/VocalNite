@@ -152,6 +152,8 @@ ProjectManagerComponent::ProjectManagerComponent()
                     {
                         placeholderLabel.setText("Created: " + currentProject.getName(),
                             juce::dontSendNotification);
+                        if (onOpenProject)
+                            onOpenProject(currentProject.getName());
                     }
                 });
 
@@ -191,8 +193,12 @@ ProjectManagerComponent::ProjectManagerComponent()
             auto modal = new OpenProjectModal(files, [this](const juce::File& f)
                 {
                     if (currentProject.load(f))
+                    {
                         placeholderLabel.setText("Opened: " + currentProject.getName(),
                             juce::dontSendNotification);
+                        if (onOpenProject)
+                            onOpenProject(currentProject.getName());
+                    }
                 });
 
             modal->setSize(400, 130);
