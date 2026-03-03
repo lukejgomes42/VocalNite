@@ -1,6 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "TopBarComponent.h"
+#include "../Projects/Project.h"
 
 class ProjectManagerComponent : public juce::Component
 {
@@ -13,6 +14,7 @@ public:
     std::function<void()> onLogout; // forwards to MainWindow
 
 private:
+    Project currentProject;
     TopBarComponent topBar;
 
     juce::TextButton createButton{ "Create New Project" };
