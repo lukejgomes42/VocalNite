@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 #include "DatabaseManager.h"
+#include "DAWComponent.h"
 
 //==============================================================================
 MainComponent::MainComponent()
@@ -162,7 +163,18 @@ void MainComponent::showAuthDialog(const juce::String& type)
                     {
                         bool success = DatabaseManager::get().login(username, password);
                         if (success)
+                        {
                             DBG("Logged in successfully!");
+                            juce::DialogWindow::LaunchOptions options;
+                            auto* dawComponent = new DAWComponent("New Project");
+                            options.content.setOwned(dawComponent);
+                            options.dialogTitle = "VocalNite";
+                            options.dialogBackgroundColour = juce::Colour(15, 15, 25);
+                            options.escapeKeyTriggersCloseButton = false;
+                            options.useNativeTitleBar = false;
+                            options.resizable = false;
+                            options.launchAsync();
+                        }
                         else
                             DBG("Login failed - incorrect username or password");
                     }

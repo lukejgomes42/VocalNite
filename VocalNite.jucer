@@ -46,6 +46,9 @@
         <FILE id="ZXLpCr" name="DatabaseManager.h" compile="0" resource="0"
               file="Source/Database/DatabaseManager.h"/>
       </GROUP>
+      <FILE id="Sc9mf6" name="DAWComponent.cpp" compile="1" resource="0"
+            file="Source/DAWComponent.cpp"/>
+      <FILE id="jiHOCU" name="DAWComponent.h" compile="0" resource="0" file="Source/DAWComponent.h"/>
       <FILE id="V216iW" name="Main.cpp" compile="1" resource="0" file="Source/Main.cpp"/>
       <FILE id="kqHz4M" name="MainComponent.cpp" compile="1" resource="0"
             file="Source/MainComponent.cpp"/>
