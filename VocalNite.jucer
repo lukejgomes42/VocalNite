@@ -44,6 +44,10 @@
         <FILE id="j40C6N" name="DAWComponent.cpp" compile="1" resource="0"
               file="Source/DAW/DAWComponent.cpp"/>
         <FILE id="B9oGfi" name="DAWComponent.h" compile="0" resource="0" file="Source/DAW/DAWComponent.h"/>
+        <FILE id="UuMKIZ" name="PianoRollComponent.cpp" compile="1" resource="0"
+              file="Source/DAW/PianoRollComponent.cpp"/>
+        <FILE id="EMlrla" name="PianoRollComponent.h" compile="0" resource="0"
+              file="Source/DAW/PianoRollComponent.h"/>
       </GROUP>
       <GROUP id="{76630D84-5977-B9C1-D1C0-E16422F36CB4}" name="Projects">
         <FILE id="Af2Acx" name="Project.cpp" compile="1" resource="0" file="Source/Projects/Project.cpp"/>

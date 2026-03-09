@@ -50,6 +50,19 @@ DAWComponent::DAWComponent(const juce::String& projectName)
         addAndMakeVisible(btn);
     }
 
+    // Piano roll toggle button
+    pianoRollButton.setButtonText("Piano Roll");
+    pianoRollButton.setColour(juce::TextButton::buttonColourId, juce::Colour(80, 0, 120));
+    pianoRollButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    pianoRollButton.onClick = [this]()
+        {
+            pianoRollVisible = !pianoRollVisible;
+            pianoRoll.setVisible(pianoRollVisible);
+            resized();
+        };
+    addAndMakeVisible(pianoRollButton);
+    addChildComponent(pianoRoll);
+
     // Tempo and time signature
     tempoButton.setButtonText("BPM: 120");
     timeSigButton.setButtonText("4/4");
@@ -140,8 +153,9 @@ void DAWComponent::resized()
     logoLabel.setBounds(4, y1 + 5, 100, 30);
     backButton.setBounds(110, y1 + 5, 110, 30);
     projectNameLabel.setBounds(getWidth() / 2 - 150, y1 + 5, 300, 30);
-    selectModeButton.setBounds(getWidth() - 230, y1 + 5, 70, 30);
-    editModeButton.setBounds(getWidth() - 155, y1 + 5, 60, 30);
+    selectModeButton.setBounds(getWidth() - 310, y1 + 5, 70, 30);
+    editModeButton.setBounds(getWidth() - 235, y1 + 5, 60, 30);
+    pianoRollButton.setBounds(getWidth() - 170, y1 + 5, 90, 30);
 
     // Toolbar 2
     tempoButton.setBounds(4, y2 + 4, 90, 26);
@@ -156,6 +170,14 @@ void DAWComponent::resized()
     pauseButton.setBounds(btnStartX + btnSize + 4, btnY, btnSize, btnSize);
     stopButton.setBounds(btnStartX + (btnSize + 4) * 2, btnY, btnSize, btnSize);
     skipButton.setBounds(btnStartX + (btnSize + 4) * 3, btnY, btnSize, btnSize);
+
+    // Grid and piano roll area
+    int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
+    int pianoRollHeight = pianoRollVisible ? 250 : 0;
+    int gridHeight = getHeight() - gridTop - pianoRollHeight;
+
+    if (pianoRollVisible)
+        pianoRoll.setBounds(0, getHeight() - pianoRollHeight, getWidth(), pianoRollHeight);
 }
 
 juce::StringArray DAWComponent::getMenuBarNames()
