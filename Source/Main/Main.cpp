@@ -65,23 +65,29 @@ private:
 
     void showProjectManager(const juce::String& username)
     {
+        setResizeLimits(600, 400, 600, 400);
+        centreWithSize(600, 400);
         auto* pm = new ProjectManagerComponent();
         pm->setUsername(username);
         pm->onLogout = [this]()
             {
                 showLoginScreen();
             };
-        pm->onOpenProject = [this](const juce::String& projectName)
+        pm->onOpenProject = [this](const juce::String& projectName, int projectId)
             {
-                showDAWComponent(projectName);
+                showDAWComponent(projectName, projectId);
             };
         setContentOwned(pm, true);
     }
 
-    void showDAWComponent(const juce::String& projectName)
+    void showDAWComponent(const juce::String& projectName, int projectId)
     {
         setResizeLimits(1280, 720, 1280, 720);
-        auto* daw = new DAWComponent(projectName);
+        auto* daw = new DAWComponent(projectName, projectId);
+        daw->onReturnToDashboard = [this]()
+            {
+                showProjectManager("");
+            };
         setContentOwned(daw, true);
         centreWithSize(1280, 720);
     }

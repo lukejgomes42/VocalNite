@@ -5,7 +5,7 @@ class PianoRollComponent : public juce::Component,
     public juce::ScrollBar::Listener
 {
 public:
-    PianoRollComponent();
+    PianoRollComponent(int patternId = -1);
     ~PianoRollComponent() override;
 
     void paint(juce::Graphics& g) override;
@@ -18,8 +18,11 @@ public:
     void mouseDown(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;
+    void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
 
 private:
+    int currentPatternId = -1;
+
     // Layout constants
     static constexpr int keyWidth = 80;
     static constexpr int noteHeight = 16;
@@ -40,14 +43,21 @@ private:
     // Placed notes storage
     struct Note
     {
-        int pitch;   // 0 = C0, 1 = C#0, etc.
-        int beat;    // which beat column
+        int pitch;
+        int beat;
+        juce::String lyric;
     };
     juce::Array<Note> placedNotes;
+
+    juce::TextEditor lyricEditor;
+    int editingNoteIndex = -1;
 
     // Helper functions
     bool isBlackKey(int noteIndex) const;
     juce::Colour getNoteColour(int pitch) const;
+    void saveNote(int pitch, int beat, const juce::String& lyric = "");
+    void deleteNote(int pitch, int beat);
+    void loadNotes();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PianoRollComponent)
 };

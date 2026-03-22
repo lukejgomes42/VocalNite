@@ -18,6 +18,8 @@ public:
     bool userExists(const juce::String& username);
     bool login(const juce::String& username, const juce::String& password);
 
+    void initializeSchema();
+
 private:
     DatabaseManager();
     std::unique_ptr<SQLite::Database> database;

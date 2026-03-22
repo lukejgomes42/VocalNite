@@ -153,7 +153,7 @@ ProjectManagerComponent::ProjectManagerComponent()
                         placeholderLabel.setText("Created: " + currentProject.getName(),
                             juce::dontSendNotification);
                         if (onOpenProject)
-                            onOpenProject(currentProject.getName());
+                            onOpenProject(currentProject.getName(), currentProject.getProjectId());
                     }
                 });
 
@@ -197,7 +197,7 @@ ProjectManagerComponent::ProjectManagerComponent()
                         placeholderLabel.setText("Opened: " + currentProject.getName(),
                             juce::dontSendNotification);
                         if (onOpenProject)
-                            onOpenProject(currentProject.getName());
+                            onOpenProject(currentProject.getName(), currentProject.getProjectId());
                     }
                 });
 

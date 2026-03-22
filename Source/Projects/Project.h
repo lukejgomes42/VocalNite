@@ -12,8 +12,10 @@ public:
 
     juce::String getName() const { return name; }
     juce::File getProjectFile() const { return projectFile; }
+    int getProjectId() const { return projectId; }
 
 private:
     juce::String name;
     juce::File projectFile;
+    int projectId = -1;
 };

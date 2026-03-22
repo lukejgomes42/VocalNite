@@ -27,6 +27,7 @@ DatabaseManager::DatabaseManager()
             dbFile.getFullPathName().toStdString(),
             SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE
         );
+        initializeSchema();
     }
     catch (const std::exception& e)
     {
@@ -141,5 +142,50 @@ bool DatabaseManager::login(const juce::String& username, const juce::String& pa
     {
         DBG("Login error: " + juce::String(e.what()));
         return false;
+    }
+}
+
+void DatabaseManager::initializeSchema()
+{
+    try
+    {
+        database->exec(
+            "CREATE TABLE IF NOT EXISTS Patterns ("
+            "    pattern_id  INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "    project_id  INTEGER NOT NULL,"
+            "    name        TEXT NOT NULL,"
+            "    FOREIGN KEY (project_id) REFERENCES Projects(project_id) ON DELETE CASCADE"
+            ");"
+        );
+
+        database->exec(
+            "CREATE TABLE IF NOT EXISTS PatternNotes ("
+            "    note_id     INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "    pattern_id  INTEGER NOT NULL,"
+            "    pitch       INTEGER NOT NULL,"
+            "    beat        INTEGER NOT NULL,"
+            "    FOREIGN KEY (pattern_id) REFERENCES Patterns(pattern_id) ON DELETE CASCADE"
+            ");"
+        );
+
+        // Add pattern_id column to VocalClips if it doesn't exist
+        try
+        {
+            database->exec("ALTER TABLE VocalClips ADD COLUMN pattern_id INTEGER REFERENCES Patterns(pattern_id);");
+        }
+        catch (...) {} // Column may already exist, ignore error
+
+        // Add lyric column to PatternNotes if it doesn't exist
+        try
+        {
+            database->exec("ALTER TABLE PatternNotes ADD COLUMN lyric TEXT DEFAULT '';");
+        }
+        catch (...) {} // Column may already exist, ignore error
+
+        DBG("Schema initialized successfully");
+    }
+    catch (const std::exception& e)
+    {
+        DBG("Schema initialization error: " + juce::String(e.what()));
     }
 }

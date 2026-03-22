@@ -12,7 +12,7 @@ public:
 
     void setUsername(const juce::String& name) { topBar.setUsername(name); }
     std::function<void()> onLogout; // forwards to MainWindow
-    std::function<void(const juce::String& projectName)> onOpenProject;
+    std::function<void(const juce::String& projectName, int projectId)> onOpenProject;
 
 private:
     Project currentProject;

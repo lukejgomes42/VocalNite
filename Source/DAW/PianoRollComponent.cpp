@@ -1,7 +1,9 @@
 #include <JuceHeader.h>
 #include "PianoRollComponent.h"
+#include "../Database/DatabaseManager.h"
 
-PianoRollComponent::PianoRollComponent()
+PianoRollComponent::PianoRollComponent(int patternId)
+    : currentPatternId(patternId)
 {
     addAndMakeVisible(verticalScroll);
     addAndMakeVisible(horizontalScroll);
@@ -15,6 +17,51 @@ PianoRollComponent::PianoRollComponent()
     verticalScroll.setCurrentRange(0.0, 200.0);
     horizontalScroll.setCurrentRange(0.0, 400.0);
 
+    // Lyric editor setup
+    lyricEditor.setMultiLine(false);
+    lyricEditor.setColour(juce::TextEditor::backgroundColourId, juce::Colour(40, 10, 60));
+    lyricEditor.setColour(juce::TextEditor::textColourId, juce::Colours::white);
+    lyricEditor.setColour(juce::TextEditor::outlineColourId, juce::Colours::hotpink);
+    lyricEditor.setVisible(false);
+    lyricEditor.onReturnKey = [this]()
+        {
+            if (editingNoteIndex >= 0 && editingNoteIndex < placedNotes.size())
+            {
+                juce::String lyric = lyricEditor.getText();
+                placedNotes.getReference(editingNoteIndex).lyric = lyric;
+
+                // Update in database
+                if (currentPatternId >= 0)
+                {
+                    try
+                    {
+                        SQLite::Statement query(DatabaseManager::get().db(),
+                            "UPDATE PatternNotes SET lyric = ? WHERE pattern_id = ? AND pitch = ? AND beat = ?");
+                        query.bind(1, lyric.toStdString());
+                        query.bind(2, currentPatternId);
+                        query.bind(3, placedNotes[editingNoteIndex].pitch);
+                        query.bind(4, placedNotes[editingNoteIndex].beat);
+                        query.exec();
+                    }
+                    catch (const std::exception& e)
+                    {
+                        DBG("Lyric save error: " + juce::String(e.what()));
+                    }
+                }
+
+                editingNoteIndex = -1;
+                lyricEditor.setVisible(false);
+                repaint();
+            }
+        };
+    lyricEditor.onEscapeKey = [this]()
+        {
+            editingNoteIndex = -1;
+            lyricEditor.setVisible(false);
+        };
+    addAndMakeVisible(lyricEditor);
+
+    loadNotes();
     setSize(900, 400);
 }
 
@@ -42,6 +89,29 @@ void PianoRollComponent::scrollBarMoved(juce::ScrollBar* bar, double newRangeSta
 
 void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
 {
+    if (e.mods.isRightButtonDown())
+    {
+        int gridX = e.x - keyWidth + (int)horizontalOffset;
+        int gridY = e.y - headerHeight + (int)verticalOffset;
+
+        if (e.x >= keyWidth && e.y >= headerHeight)
+        {
+            int beat = gridX / cellWidth;
+            int pitch = gridY / noteHeight;
+
+            for (int i = placedNotes.size() - 1; i >= 0; --i)
+            {
+                if (placedNotes[i].pitch == pitch && placedNotes[i].beat == beat)
+                {
+                    deleteNote(pitch, beat);
+                    placedNotes.remove(i);
+                    repaint();
+                    return;
+                }
+            }
+        }
+        return;
+    }
     int gridX = e.x - keyWidth + (int)horizontalOffset;
     int gridY = e.y - headerHeight + (int)verticalOffset;
 
@@ -59,19 +129,61 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
     {
         if (placedNotes[i].pitch == pitch && placedNotes[i].beat == beat)
         {
-            placedNotes.remove(i);
-            repaint();
+            // If clicking existing note, open lyric editor
+            editingNoteIndex = i;
+            int noteX = keyWidth + beat * cellWidth - (int)horizontalOffset;
+            int noteY = headerHeight + pitch * noteHeight - (int)verticalOffset;
+            lyricEditor.setText(placedNotes[i].lyric);
+            lyricEditor.setBounds(noteX, noteY, cellWidth, noteHeight);
+            lyricEditor.setVisible(true);
+            lyricEditor.grabKeyboardFocus();
+            lyricEditor.selectAll();
             return;
         }
     }
 
-    placedNotes.add({ pitch, beat });
+    saveNote(pitch, beat, "");
+    Note newNote;
+    newNote.pitch = pitch;
+    newNote.beat = beat;
+    newNote.lyric = "";
+    placedNotes.add(newNote);
+
+    // Show lyric editor for new note
+    editingNoteIndex = placedNotes.size() - 1;
+    int noteX = keyWidth + beat * cellWidth - (int)horizontalOffset;
+    int noteY = headerHeight + pitch * noteHeight - (int)verticalOffset;
+    lyricEditor.setText("");
+    lyricEditor.setBounds(noteX, noteY, cellWidth, noteHeight);
+    lyricEditor.setVisible(true);
+    lyricEditor.grabKeyboardFocus();
     repaint();
 }
 
 void PianoRollComponent::mouseUp(const juce::MouseEvent& e) {}
 void PianoRollComponent::mouseDrag(const juce::MouseEvent& e) {}
 
+void PianoRollComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
+{
+    if (e.x < keyWidth)
+    {
+        // Scrolling over piano keys - scroll vertically
+        double newOffset = verticalOffset - (double)wheel.deltaY * 60.0;
+        newOffset = std::max(0.0, std::min(newOffset, verticalScroll.getRangeLimit().getEnd()));
+        verticalScroll.setCurrentRangeStart(newOffset);
+    }
+    else
+    {
+        // Scrolling over grid - vertical scrolls tracks, horizontal scrolls beats
+        double newVOffset = verticalOffset - (double)wheel.deltaY * 60.0;
+        newVOffset = std::max(0.0, std::min(newVOffset, verticalScroll.getRangeLimit().getEnd()));
+        verticalScroll.setCurrentRangeStart(newVOffset);
+
+        double newHOffset = horizontalOffset - (double)wheel.deltaX * 60.0;
+        newHOffset = std::max(0.0, std::min(newHOffset, horizontalScroll.getRangeLimit().getEnd()));
+        horizontalScroll.setCurrentRangeStart(newHOffset);
+    }
+}
 void PianoRollComponent::paint(juce::Graphics& g)
 {
     int scrolledY = (int)verticalOffset;
@@ -165,6 +277,12 @@ void PianoRollComponent::paint(juce::Graphics& g)
         g.fillRoundedRectangle(x + 1, y + 1, cellWidth - 2, noteHeight - 2, 3.0f);
         g.setColour(juce::Colours::white.withAlpha(0.4f));
         g.drawRoundedRectangle(x + 1, y + 1, cellWidth - 2, noteHeight - 2, 3.0f, 1.0f);
+        if (note.lyric.isNotEmpty())
+        {
+            g.setColour(juce::Colours::white);
+            g.setFont(10.0f);
+            g.drawText(note.lyric, x + 2, y + 1, cellWidth - 4, noteHeight - 2, juce::Justification::centred);
+        }
     }
 
     // Clip boundary
@@ -182,4 +300,66 @@ void PianoRollComponent::resized()
 
     verticalScroll.setCurrentRange(verticalOffset, getHeight() - headerHeight);
     horizontalScroll.setCurrentRange(horizontalOffset, getWidth() - keyWidth);
+}
+
+void PianoRollComponent::saveNote(int pitch, int beat, const juce::String& lyric)
+{
+    if (currentPatternId < 0) return;
+    try
+    {
+        SQLite::Statement query(DatabaseManager::get().db(),
+            "INSERT INTO PatternNotes (pattern_id, pitch, beat, lyric) VALUES (?, ?, ?, ?)");
+        query.bind(1, currentPatternId);
+        query.bind(2, pitch);
+        query.bind(3, beat);
+        query.bind(4, lyric.toStdString());
+        query.exec();
+    }
+    catch (const std::exception& e)
+    {
+        DBG("Save note error: " + juce::String(e.what()));
+    }
+}
+
+void PianoRollComponent::deleteNote(int pitch, int beat)
+{
+    if (currentPatternId < 0) return;
+    try
+    {
+        SQLite::Statement query(DatabaseManager::get().db(),
+            "DELETE FROM PatternNotes WHERE pattern_id = ? AND pitch = ? AND beat = ?");
+        query.bind(1, currentPatternId);
+        query.bind(2, pitch);
+        query.bind(3, beat);
+        query.exec();
+    }
+    catch (const std::exception& e)
+    {
+        DBG("Delete note error: " + juce::String(e.what()));
+    }
+}
+
+void PianoRollComponent::loadNotes()
+{
+    if (currentPatternId < 0) return;
+    placedNotes.clear();
+    try
+    {
+        SQLite::Statement query(DatabaseManager::get().db(),
+            "SELECT pitch, beat, lyric FROM PatternNotes WHERE pattern_id = ?");
+        query.bind(1, currentPatternId);
+        while (query.executeStep())
+        {
+            Note n;
+            n.pitch = query.getColumn(0).getInt();
+            n.beat = query.getColumn(1).getInt();
+            n.lyric = juce::String(query.getColumn(2).getString());
+            placedNotes.add(n);
+        }
+        DBG("Loaded " + juce::String(placedNotes.size()) + " notes");
+    }
+    catch (const std::exception& e)
+    {
+        DBG("Load notes error: " + juce::String(e.what()));
+    }
 }
