@@ -51,6 +51,8 @@ public:
     }
 
 private:
+    juce::String currentUsername;
+
     void showLoginScreen()
     {
         auto* login = new MainComponent();
@@ -65,10 +67,13 @@ private:
 
     void showProjectManager(const juce::String& username)
     {
+        if (username.isNotEmpty())
+            currentUsername = username;
+
         setResizeLimits(600, 400, 600, 400);
         centreWithSize(600, 400);
         auto* pm = new ProjectManagerComponent();
-        pm->setUsername(username);
+        pm->setUsername(currentUsername);
         pm->onLogout = [this]()
             {
                 showLoginScreen();
@@ -83,7 +88,7 @@ private:
     void showDAWComponent(const juce::String& projectName, int projectId)
     {
         setResizeLimits(1280, 720, 1280, 720);
-        auto* daw = new DAWComponent(projectName, projectId);
+        auto* daw = new DAWComponent(projectName, projectId, currentUsername); // ← add currentUsername
         daw->onReturnToDashboard = [this]()
             {
                 showProjectManager("");

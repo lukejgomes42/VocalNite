@@ -8,7 +8,7 @@ class DAWComponent : public juce::Component,
     public juce::Timer
 {
 public:
-    DAWComponent(const juce::String& projectName, int projectId);
+    DAWComponent(const juce::String& projectName, int projectId, const juce::String& username = "");
     ~DAWComponent() override;
 
     void paint(juce::Graphics& g) override;
@@ -34,6 +34,8 @@ public:
     void mouseUp(const juce::MouseEvent& e) override;
 
     std::function<void()> onReturnToDashboard;
+
+    void setUsername(const juce::String& name) { currentUsername = name; usernameLabel.setText(name, juce::dontSendNotification); }
 
 private:
     // Menu bar
@@ -90,6 +92,16 @@ private:
 
     juce::Array<int> patternIds;
 
+    // Pattern note previews
+    struct NotePreview
+    {
+        int pitch;
+        int beat;
+    };
+    juce::Array<juce::Array<NotePreview>> patternNotePreviews;
+
+    void loadPatternNotes();
+
     // Placed clips
     struct PlacedClip
     {
@@ -126,6 +138,18 @@ private:
 
     void performUndo();
     void performRedo();
+
+    // Metronome
+    juce::TextButton metronomeButton;
+    bool metronomeEnabled = false;
+    bool metronomeBeat = false;
+    double beatAccumulator = 0.0;
+    juce::AudioDeviceManager audioDeviceManager;
+
+    void playMetronomeClick();
+
+    juce::String currentUsername;
+    juce::Label usernameLabel;
 
     // Helpers
     void addTrack();

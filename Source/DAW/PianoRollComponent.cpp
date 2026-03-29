@@ -65,7 +65,11 @@ PianoRollComponent::PianoRollComponent(int patternId)
     setSize(900, 400);
 }
 
-PianoRollComponent::~PianoRollComponent() {}
+PianoRollComponent::~PianoRollComponent()
+{
+    if (onEditorClosed)
+        onEditorClosed();
+}
 
 bool PianoRollComponent::isBlackKey(int noteIndex) const
 {

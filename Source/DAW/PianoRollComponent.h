@@ -8,6 +8,8 @@ public:
     PianoRollComponent(int patternId = -1);
     ~PianoRollComponent() override;
 
+    std::function<void()> onEditorClosed;
+
     void paint(juce::Graphics& g) override;
     void resized() override;
 

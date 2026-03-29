@@ -20,8 +20,8 @@ public:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PatternEditorWindow)
 };
 
-DAWComponent::DAWComponent(const juce::String& projectName, int projectId)
-    : menuBar(this), currentProjectName(projectName), currentProjectId(projectId)
+DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const juce::String& username)
+    : menuBar(this), currentProjectName(projectName), currentProjectId(projectId), currentUsername(username)
 {
     // Menu bar
     addAndMakeVisible(menuBar);
@@ -31,6 +31,13 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId)
     logoLabel.setFont(juce::Font(18.0f, juce::Font::bold));
     logoLabel.setColour(juce::Label::textColourId, juce::Colours::hotpink);
     addAndMakeVisible(logoLabel);
+
+    // Username label
+    usernameLabel.setFont(juce::Font(13.0f));
+    usernameLabel.setJustificationType(juce::Justification::centredRight);
+    usernameLabel.setColour(juce::Label::textColourId, juce::Colour(180, 140, 210));
+    addAndMakeVisible(usernameLabel);
+    usernameLabel.setText(currentUsername, juce::dontSendNotification);
 
     // Project name
     projectNameLabel.setText(currentProjectName, juce::dontSendNotification);
@@ -81,6 +88,21 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId)
         btn->setColour(juce::TextButton::textColourOnId, juce::Colours::white);
         addAndMakeVisible(btn);
     }
+
+    // Metronome button
+    metronomeButton.setButtonText("Metro");
+    metronomeButton.setColour(juce::TextButton::buttonColourId, juce::Colour(40, 40, 60));
+    metronomeButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    metronomeButton.onClick = [this]()
+        {
+            metronomeEnabled = !metronomeEnabled;
+            metronomeButton.setColour(juce::TextButton::buttonColourId,
+                metronomeEnabled ? juce::Colour(0, 120, 80) : juce::Colour(40, 40, 60));
+        };
+    addAndMakeVisible(metronomeButton);
+
+    // Initialize audio device
+    audioDeviceManager.initialiseWithDefaultDevices(0, 2);
 
     addChildComponent(pianoRoll);
 
@@ -199,6 +221,7 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId)
         addAndMakeVisible(btn);
     }
     loadPatterns();
+    loadPatternNotes();
     setSize(1280, 720);
 }
 
@@ -226,6 +249,13 @@ void DAWComponent::paint(juce::Graphics& g)
     g.fillRect(0, menuBarHeight, getWidth(), toolbarHeight);
     g.setColour(juce::Colour(20, 20, 40));
     g.fillRect(0, menuBarHeight + toolbarHeight, getWidth(), toolbar2Height);
+
+    // Metronome visual flash
+    if (metronomeEnabled && metronomeBeat)
+    {
+        g.setColour(juce::Colours::limegreen.withAlpha(0.6f));
+        g.fillRoundedRectangle(170 + (28 + 4) * 3, menuBarHeight + toolbarHeight + 3, 50, 28, 4.0f);
+    }
 
     // Pattern browser background
     g.setColour(juce::Colour(20, 10, 35));
@@ -274,6 +304,15 @@ void DAWComponent::paint(juce::Graphics& g)
         g.setColour(i % 2 == 0 ? juce::Colour(25, 25, 40) : juce::Colour(20, 20, 35));
         g.fillRect(gridLeft, y, gridWidth, trackHeight);
 
+        // Vertical beat lines
+        g.setColour(juce::Colour(60, 60, 90));
+        for (int col = startCol; col <= startCol + numCols + 1; ++col)
+        {
+            int x = gridLeft + col * cellWidth - scrolledX;
+            if (x > getWidth()) break;
+            g.drawLine(x, y, x, y + trackHeight, 1.0f);
+        }
+
         // Remove button in track header
         g.setColour(juce::Colour(150, 30, 30));
         g.fillRoundedRectangle(patternWidth + 4, y + 10, 20, 20, 4.0f);
@@ -295,6 +334,43 @@ void DAWComponent::paint(juce::Graphics& g)
                 if (clipX + clipW < gridLeft || clipX > getWidth()) continue;
                 g.setColour(juce::Colour(100, 40, 160));
                 g.fillRoundedRectangle(clipX + 1, y + 2, clipW - 2, trackHeight - 4, 4.0f);
+                // Draw note preview as horizontal bars (mini piano roll)
+                int pIdx = clip.patternIndex;
+                if (pIdx < patternNotePreviews.size())
+                {
+                    auto& notes = patternNotePreviews.getReference(pIdx);
+                    int maxBeat = 32;
+                    int minPitch = 127, maxPitch = 0;
+
+                    // Find pitch range for better scaling
+                    for (auto& note : notes)
+                    {
+                        minPitch = std::min(minPitch, note.pitch);
+                        maxPitch = std::max(maxPitch, note.pitch);
+                    }
+                    int pitchRange = std::max(maxPitch - minPitch, 12); // min range of 12 semitones
+
+                    int innerTop = y + 14;           // leave room for label
+                    int innerBottom = y + trackHeight - 3;
+                    int innerHeight = innerBottom - innerTop;
+                    int barH = std::max(2, innerHeight / pitchRange);
+
+                    for (auto& note : notes)
+                    {
+                        float noteXRatio = (float)note.beat / maxBeat;
+                        float noteYRatio = 1.0f - (float)(note.pitch - minPitch) / pitchRange; // flip: high pitch = top
+                        int nx = clipX + 2 + (int)(noteXRatio * (clipW - 4));
+                        int ny = innerTop + (int)(noteYRatio * (innerHeight - barH));
+                        int barW = std::max(3, (clipW - 4) / maxBeat);
+
+                        if (nx >= clipX && nx + barW <= clipX + clipW)
+                        {
+                            g.setColour(juce::Colours::white.withAlpha(0.55f));
+                            g.fillRect(nx, ny, barW, barH);
+                        }
+                    }
+                }
+
                 g.setColour(juce::Colours::white.withAlpha(0.7f));
                 g.setFont(11.0f);
                 g.drawText(patternNames[clip.patternIndex], clipX + 4, y + 2, clipW - 8, trackHeight - 4, juce::Justification::centredLeft);
@@ -308,14 +384,6 @@ void DAWComponent::paint(juce::Graphics& g)
         g.drawLine(gridLeft, y + trackHeight, gridLeft + gridWidth, y + trackHeight, 1.0f);
     }
 
-    // Vertical beat lines
-    g.setColour(juce::Colour(60, 60, 90));
-    for (int col = startCol; col <= startCol + numCols + 1; ++col)
-    {
-        int x = gridLeft + col * cellWidth - scrolledX;
-        if (x > getWidth()) break;
-        g.drawLine(x, trackAreaTop, x, getHeight(), 1.0f);
-    }
 
     // Redraw left columns on top of everything
     g.setColour(juce::Colour(20, 10, 35));
@@ -399,9 +467,10 @@ void DAWComponent::resized()
 
     // Toolbar 1
     logoLabel.setBounds(4, y1 + 5, 100, 30);
-    projectNameLabel.setBounds(getWidth() / 2 - 150, y1 + 5, 300, 30);
-    selectModeButton.setBounds(getWidth() - 150, y1 + 5, 70, 30);
-    editModeButton.setBounds(getWidth() - 75, y1 + 5, 70, 30);
+    projectNameLabel.setBounds(getWidth() / 2 - 100, y1 + 5, 200, 30);
+    usernameLabel.setBounds(getWidth() - 260, y1 + 5, 130, 30);
+    selectModeButton.setBounds(getWidth() - 155, y1 + 5, 70, 30);
+    editModeButton.setBounds(getWidth() - 80, y1 + 5, 70, 30);
 
     // Toolbar 2
     tempoButton.setBounds(4, y2 + 4, 90, 26);
@@ -413,6 +482,7 @@ void DAWComponent::resized()
     playButton.setBounds(btnStartX, btnY, btnSize, btnSize);
     pauseButton.setBounds(btnStartX + btnSize + 4, btnY, btnSize, btnSize);
     stopButton.setBounds(btnStartX + (btnSize + 4) * 2, btnY, btnSize, btnSize);
+    metronomeButton.setBounds(btnStartX + (btnSize + 4) * 3, btnY, 50, btnSize);
 
     // Add track button at bottom left
     addTrackButton.setBounds(4, getHeight() - 30, 120, 24);
@@ -460,9 +530,8 @@ juce::PopupMenu DAWComponent::getMenuForIndex(int menuIndex, const juce::String&
     juce::PopupMenu menu;
     if (menuIndex == 0) // File
     {
-        menu.addItem(1, "New Project");
-        menu.addItem(2, "Open Project");
         menu.addItem(3, "Save Project");
+        menu.addItem(14, "Export As");
         menu.addSeparator();
         menu.addItem(4, "Dashboard");
     }
@@ -488,7 +557,7 @@ juce::PopupMenu DAWComponent::getMenuForIndex(int menuIndex, const juce::String&
     }
     else if (menuIndex == 5) // Tools
     {
-        menu.addItem(13, "Settings");
+        menu.addItem(13, "Metronome");
     }
     else if (menuIndex == 6) // Help
     {
@@ -539,6 +608,15 @@ void DAWComponent::menuItemSelected(int menuItemID, int)
         stopTimer();
         playheadPosition = 0.0;
         repaint();
+        break;
+
+    case 13: // Metronome
+        metronomeEnabled = !metronomeEnabled;
+        metronomeButton.setColour(juce::TextButton::buttonColourId,
+            metronomeEnabled ? juce::Colour(0, 120, 80) : juce::Colour(40, 40, 60));
+        break;
+
+    case 14: // Export As
         break;
 
     default:
@@ -812,6 +890,7 @@ void DAWComponent::addPattern()
 
     int totalPatternHeight = patternNames.size() * patternHeight;
     patternScrollBar.setRangeLimits(0.0, totalPatternHeight);
+    loadPatternNotes();
     repaint();
     resized();
 }
@@ -824,6 +903,13 @@ void DAWComponent::openPatternEditor(int index)
     window->setContentOwned(roll, true);
     window->centreWithSize(1280, 720);
     window->setVisible(true);
+
+    // Reload note previews when the editor is closed
+    roll->onEditorClosed = [this]()
+        {
+            loadPatternNotes();
+            repaint();
+        };
 }
 
 void DAWComponent::drawPatternBrowser(juce::Graphics& g, int gridTop, int patternWidth)
@@ -839,11 +925,45 @@ void DAWComponent::drawPatternBrowser(juce::Graphics& g, int gridTop, int patter
         g.setColour(juce::Colour(70, 20, 110));
         g.fillRoundedRectangle(4, y, patternWidth - 14, patternHeight - 4, 4.0f);
 
+        // Draw note preview as horizontal bars (mini piano roll)
+        if (i < patternNotePreviews.size())
+        {
+            auto& notes = patternNotePreviews.getReference(i);
+            if (!notes.isEmpty())
+            {
+                int maxBeat = 32;
+                int minPitch = 127, maxPitch = 0;
+                for (auto& note : notes)
+                {
+                    minPitch = std::min(minPitch, note.pitch);
+                    maxPitch = std::max(maxPitch, note.pitch);
+                }
+                int pitchRange = std::max(maxPitch - minPitch, 12);
+
+                int previewW = patternWidth - 18;
+                int innerTop = y + 4;
+                int innerH = patternHeight - 8;
+                int barH = std::max(2, innerH / pitchRange);
+                int barW = std::max(3, previewW / maxBeat);
+
+                for (auto& note : notes)
+                {
+                    float noteXRatio = (float)note.beat / maxBeat;
+                    float noteYRatio = 1.0f - (float)(note.pitch - minPitch) / pitchRange;
+                    int nx = 6 + (int)(noteXRatio * (previewW - barW));
+                    int ny = innerTop + (int)(noteYRatio * (innerH - barH));
+                    g.setColour(juce::Colours::white.withAlpha(0.55f));
+                    g.fillRect(nx, ny, barW, barH);
+                }
+            }
+        }
+
         g.setColour(juce::Colours::white);
         g.setFont(12.0f);
         g.drawText(patternNames[i], 10, y, patternWidth - 24, patternHeight - 4, juce::Justification::centredLeft);
     }
 }
+
 void DAWComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
     int patternWidth = 150;
@@ -878,10 +998,26 @@ void DAWComponent::timerCallback()
 {
     if (isPlaying)
     {
-        // Move playhead based on BPM
-        // At 60 FPS, each frame advances by (BPM / 60) / 60 beats
         double beatsPerFrame = (currentBPM / 60.0) / 60.0;
         playheadPosition += beatsPerFrame;
+
+        // Metronome
+        if (metronomeEnabled)
+        {
+            double prevAccumulator = beatAccumulator;
+            beatAccumulator += beatsPerFrame;
+
+            if ((int)beatAccumulator > (int)prevAccumulator)
+            {
+                metronomeBeat = true;
+                playMetronomeClick();
+            }
+            else
+            {
+                metronomeBeat = false;
+            }
+        }
+
         repaint();
     }
 }
@@ -971,7 +1107,6 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
         }
         else
         {
-            // Move clip to new position
             for (int i = 0; i < trackNames.size(); ++i)
             {
                 int y = trackAreaTop + i * trackHeight - (int)trackScrollOffset;
@@ -982,18 +1117,27 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
                     double beat = (double)(e.x - gridLeft + (int)horizontalScrollOffset) / cellWidth;
                     beat = std::max(0.0, beat);
 
-                    // Magnetic snapping
-                    for (int j = 0; j < placedClips.size(); ++j)
+                    if (!e.mods.isShiftDown())
                     {
-                        if (j == draggingClipIndex) continue;
-                        auto& other = placedClips.getReference(j);
-                        if (other.trackIndex == i)
+                        double snapThreshold = 0.5;
+
+                        // Snap to beat grid
+                        double nearestBeat = std::round(beat);
+                        if (std::abs(beat - nearestBeat) < snapThreshold)
+                            beat = nearestBeat;
+
+                        // Snap to other clip edges
+                        for (int j = 0; j < placedClips.size(); ++j)
                         {
-                            double snapThreshold = 0.5;
-                            if (std::abs(beat - (other.startBeat + other.duration)) < snapThreshold)
-                                beat = other.startBeat + other.duration;
-                            else if (std::abs(beat - other.startBeat) < snapThreshold)
-                                beat = other.startBeat - placedClips[draggingClipIndex].duration;
+                            if (j == draggingClipIndex) continue;
+                            auto& other = placedClips.getReference(j);
+                            if (other.trackIndex == i)
+                            {
+                                if (std::abs(beat - (other.startBeat + other.duration)) < snapThreshold)
+                                    beat = other.startBeat + other.duration;
+                                else if (std::abs(beat - other.startBeat) < snapThreshold)
+                                    beat = other.startBeat - placedClips[draggingClipIndex].duration;
+                            }
                         }
                     }
 
@@ -1017,7 +1161,6 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
     }
     else if (isDraggingPattern && draggingPatternIndex >= 0)
     {
-        // Check if dropped on a track
         for (int i = 0; i < trackNames.size(); ++i)
         {
             int y = trackAreaTop + i * trackHeight - (int)trackScrollOffset;
@@ -1028,16 +1171,25 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
                 double beat = (double)(e.x - gridLeft + (int)horizontalScrollOffset) / cellWidth;
                 beat = std::max(0.0, beat);
 
-                // Magnetic snapping
-                for (auto& clip : placedClips)
+                if (!e.mods.isShiftDown())
                 {
-                    if (clip.trackIndex == i)
+                    double snapThreshold = 0.5;
+
+                    // Snap to beat grid
+                    double nearestBeat = std::round(beat);
+                    if (std::abs(beat - nearestBeat) < snapThreshold)
+                        beat = nearestBeat;
+
+                    // Snap to other clip edges
+                    for (auto& clip : placedClips)
                     {
-                        double snapThreshold = 0.5;
-                        if (std::abs(beat - (clip.startBeat + clip.duration)) < snapThreshold)
-                            beat = clip.startBeat + clip.duration;
-                        else if (std::abs(beat - clip.startBeat) < snapThreshold)
-                            beat = clip.startBeat - 4.0;
+                        if (clip.trackIndex == i)
+                        {
+                            if (std::abs(beat - (clip.startBeat + clip.duration)) < snapThreshold)
+                                beat = clip.startBeat + clip.duration;
+                            else if (std::abs(beat - clip.startBeat) < snapThreshold)
+                                beat = clip.startBeat - 4.0;
+                        }
                     }
                 }
 
@@ -1215,4 +1367,69 @@ void DAWComponent::performRedo()
     undoStack.add(action);
     repaint();
     resized();
+}
+
+void DAWComponent::playMetronomeClick()
+{
+    // Generate a simple click sound using a sine wave burst
+    juce::AudioSampleBuffer clickBuffer(2, 2048);
+    clickBuffer.clear();
+
+    float* samplesL = clickBuffer.getWritePointer(0);
+    float* samplesR = clickBuffer.getWritePointer(1);
+    for (int i = 0; i < 2048; ++i)
+    {
+        float envelope = std::exp(-i / 200.0f);
+        float sample = envelope * std::sin(2.0f * juce::MathConstants<float>::pi * 1000.0f * i / 44100.0f);
+        samplesL[i] = sample;
+        samplesR[i] = sample;
+    }
+
+    // Play through audio device
+    if (auto* device = audioDeviceManager.getCurrentAudioDevice())
+    {
+        juce::AudioSourceChannelInfo info(&clickBuffer, 0, clickBuffer.getNumSamples());
+        juce::MemoryAudioSource source(clickBuffer, false);
+        source.prepareToPlay(clickBuffer.getNumSamples(), device->getCurrentSampleRate());
+        juce::AudioSourcePlayer player;
+        player.setSource(&source);
+        audioDeviceManager.addAudioCallback(&player);
+        juce::Time::waitForMillisecondCounter(juce::Time::getMillisecondCounter() + 50);
+        audioDeviceManager.removeAudioCallback(&player);
+    }
+}
+
+void DAWComponent::loadPatternNotes()
+{
+    patternNotePreviews.clear();
+
+    for (int i = 0; i < patternIds.size(); ++i)
+    {
+        juce::Array<NotePreview> notes;
+        int patternId = patternIds[i];
+
+        if (patternId >= 0)
+        {
+            try
+            {
+                SQLite::Statement query(DatabaseManager::get().db(),
+                    "SELECT pitch, beat FROM PatternNotes WHERE pattern_id = ? ORDER BY beat ASC");
+                query.bind(1, patternId);
+
+                while (query.executeStep())
+                {
+                    NotePreview n;
+                    n.pitch = query.getColumn(0).getInt();
+                    n.beat = query.getColumn(1).getInt();
+                    notes.add(n);
+                }
+            }
+            catch (const std::exception& e)
+            {
+                DBG("Load pattern notes error: " + juce::String(e.what()));
+            }
+        }
+
+        patternNotePreviews.add(notes);
+    }
 }
