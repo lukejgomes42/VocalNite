@@ -34,8 +34,7 @@ public:
     void mouseUp(const juce::MouseEvent& e) override;
 
     std::function<void()> onReturnToDashboard;
-
-    void setUsername(const juce::String& name) { currentUsername = name; usernameLabel.setText(name, juce::dontSendNotification); }
+    void mouseMove(const juce::MouseEvent& e) override;
 
 private:
     // Menu bar
@@ -55,9 +54,15 @@ private:
     // Dynamic tracks
     juce::TextButton addTrackButton;
     juce::StringArray trackNames;
+    juce::Array<int> trackIds;
     int trackHeight = 40;
     double trackScrollOffset = 0.0;
     juce::ScrollBar trackScrollBar{ true };
+
+    bool isResizingClip = false;
+    int resizingClipIndex = -1;
+    double resizeStartX = 0.0;
+    double resizeOriginalDuration = 0.0;
 
     // Pattern browser
     juce::StringArray patternNames;
@@ -97,6 +102,7 @@ private:
     {
         int pitch;
         int beat;
+        int duration = 1;
     };
     juce::Array<juce::Array<NotePreview>> patternNotePreviews;
 
@@ -108,9 +114,20 @@ private:
         int patternIndex;
         int trackIndex;
         double startBeat;
-        double duration = 4.0; // default 4 beats
+        double duration = 4.0;
+        int clipId = -1;
     };
     juce::Array<PlacedClip> placedClips;
+
+    void saveClip(const PlacedClip& clip);
+    void deleteClip(int clipId);
+    void loadClips();
+
+    void updateClip(const PlacedClip& clip);
+
+    void saveTrack(const juce::String& trackName, int orderIndex);
+    void deleteTrackFromDB(int trackId);
+    void loadTracks();
 
     // Undo/Redo
     struct Action

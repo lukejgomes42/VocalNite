@@ -11,7 +11,8 @@ public:
     void paint(juce::Graphics&) override;
     void resized() override;
 
-    void setUsername(const juce::String& name) { topBar.setUsername(name); }
+    void setUsername(const juce::String& name);
+
     std::function<void()> onLogout;
     std::function<void(const juce::String& projectName, int projectId)> onOpenProject;
 
@@ -29,6 +30,9 @@ private:
     juce::Label statusLabel;
     juce::ListBox recentProjectsList;
     juce::Array<juce::File> recentFiles;
+    juce::String currentUsername;
+    juce::StringArray recentProjectNames;
+    juce::Array<int> recentProjectIds;
 
     void refreshRecentProjects();
     juce::Rectangle<int> getCentreCardBounds() const;

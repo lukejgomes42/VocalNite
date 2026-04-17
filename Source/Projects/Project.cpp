@@ -1,7 +1,9 @@
+#include <JuceHeader.h>
 #include "Project.h"
 #include "../Database/DatabaseManager.h"
+#include <libpq-fe.h>
 
-bool Project::createNew(const juce::File& folder, const juce::String& projectName)
+bool Project::createNew(const juce::File& folder, const juce::String& projectName, int userId)
 {
     if (!folder.exists())
         folder.createDirectory();
@@ -10,19 +12,22 @@ bool Project::createNew(const juce::File& folder, const juce::String& projectNam
     projectFile = folder.getChildFile("project.vnite");
 
     // Save to database and get project ID
-    try
+    std::string userIdStr = std::to_string(userId);
+    const char* params[2] = { projectName.toRawUTF8(), userIdStr.c_str() };
+    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+        "INSERT INTO Projects (user_id, name, bpm, time_signature) VALUES ($2, $1, 120, '4/4') RETURNING project_id",
+        2, nullptr, params, nullptr, nullptr, 0);
+
+    if (PQresultStatus(res) == PGRES_TUPLES_OK)
     {
-        SQLite::Statement query(DatabaseManager::get().db(),
-            "INSERT INTO Projects (user_id, name, bpm, time_signature) VALUES (1, ?, 120, '4/4')");
-        query.bind(1, name.toStdString());
-        query.exec();
-        projectId = (int)DatabaseManager::get().db().getLastInsertRowid();
+        projectId = std::stoi(PQgetvalue(res, 0, 0));
         DBG("Project created with ID: " + juce::String(projectId));
     }
-    catch (const std::exception& e)
+    else
     {
-        DBG("Project DB error: " + juce::String(e.what()));
+        DBG("Project DB error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
     }
+    PQclear(res);
 
     return save();
 }

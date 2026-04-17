@@ -1,6 +1,7 @@
 #include <JuceHeader.h>
 #include "DAWComponent.h"
 #include "../Database/DatabaseManager.h"
+#include <libpq-fe.h>
 
 class PatternEditorWindow : public juce::DocumentWindow
 {
@@ -33,7 +34,7 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
     addAndMakeVisible(logoLabel);
 
     // Username label
-    usernameLabel.setFont(juce::Font(13.0f));
+    usernameLabel.setFont(juce::Font(16.0f));
     usernameLabel.setJustificationType(juce::Justification::centredRight);
     usernameLabel.setColour(juce::Label::textColourId, juce::Colour(180, 140, 210));
     addAndMakeVisible(usernameLabel);
@@ -128,11 +129,14 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
                 {
                     try
                     {
-                        SQLite::Statement query(DatabaseManager::get().db(),
-                            "UPDATE Patterns SET name = ? WHERE pattern_id = ?");
-                        query.bind(1, newName.toStdString());
-                        query.bind(2, patternIds[editingPatternIndex]);
-                        query.exec();
+                        std::string patternIdStr = std::to_string(patternIds[editingPatternIndex]);
+                        const char* params[2] = { newName.toRawUTF8(), patternIdStr.c_str() };
+                        PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                            "UPDATE Patterns SET name = $1 WHERE pattern_id = $2",
+                            2, nullptr, params, nullptr, nullptr, 0);
+                        if (PQresultStatus(res) != PGRES_COMMAND_OK)
+                            DBG("Pattern rename error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+                        PQclear(res);
                     }
                     catch (const std::exception& e)
                     {
@@ -146,13 +150,6 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
             }
         };
     addAndMakeVisible(patternRenameEditor);
-
-    // Dynamic tracks
-    trackNames.add("Track 1");
-    trackNames.add("Track 2");
-    trackNames.add("Track 3");
-    trackNames.add("Track 4");
-    trackNames.add("Track 5");
 
     addTrackButton.setButtonText("+ Add Track");
     addTrackButton.setColour(juce::TextButton::buttonColourId, juce::Colour(20, 80, 20));
@@ -222,6 +219,17 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
     }
     loadPatterns();
     loadPatternNotes();
+    loadClips();
+    loadTracks();
+    if (trackNames.isEmpty())
+    {
+        for (int i = 1; i <= 5; ++i)
+        {
+            juce::String trackName = "Track " + juce::String(i);
+            trackNames.add(trackName);
+            saveTrack(trackName, i - 1);
+        }
+    }
     setSize(1280, 720);
 }
 
@@ -239,7 +247,7 @@ void DAWComponent::paint(juce::Graphics& g)
     int patternWidth = 150;
     int trackHeaderWidth = 80;
     int gridLeft = patternWidth + trackHeaderWidth;
-    int cellWidth = 80;
+    int cellWidth = (int)(80.0f * cellWidthMultiplier);
     int scrollBarWidth = 12;
     int gridWidth = getWidth() - gridLeft - scrollBarWidth;
     int scrolledX = (int)horizontalScrollOffset;
@@ -339,7 +347,8 @@ void DAWComponent::paint(juce::Graphics& g)
                 if (pIdx < patternNotePreviews.size())
                 {
                     auto& notes = patternNotePreviews.getReference(pIdx);
-                    int maxBeat = 32;
+                    int maxBeat = (int)(clip.duration * 4);
+                    if (maxBeat < 1) maxBeat = 1;
                     int minPitch = 127, maxPitch = 0;
 
                     // Find pitch range for better scaling
@@ -361,7 +370,8 @@ void DAWComponent::paint(juce::Graphics& g)
                         float noteYRatio = 1.0f - (float)(note.pitch - minPitch) / pitchRange; // flip: high pitch = top
                         int nx = clipX + 2 + (int)(noteXRatio * (clipW - 4));
                         int ny = innerTop + (int)(noteYRatio * (innerHeight - barH));
-                        int barW = std::max(3, (clipW - 4) / maxBeat);
+                        int barW = (int)((float)note.duration / maxBeat * (clipW - 4));
+                        if (barW < 3) barW = 3;
 
                         if (nx >= clipX && nx + barW <= clipX + clipW)
                         {
@@ -468,9 +478,9 @@ void DAWComponent::resized()
     // Toolbar 1
     logoLabel.setBounds(4, y1 + 5, 100, 30);
     projectNameLabel.setBounds(getWidth() / 2 - 100, y1 + 5, 200, 30);
-    usernameLabel.setBounds(getWidth() - 260, y1 + 5, 130, 30);
-    selectModeButton.setBounds(getWidth() - 155, y1 + 5, 70, 30);
-    editModeButton.setBounds(getWidth() - 80, y1 + 5, 70, 30);
+    selectModeButton.setBounds(getWidth() - 270, y1 + 5, 70, 30);
+    editModeButton.setBounds(getWidth() - 195, y1 + 5, 70, 30);
+    usernameLabel.setBounds(getWidth() - 120, y1 + 5, 115, 30);
 
     // Toolbar 2
     tempoButton.setBounds(4, y2 + 4, 90, 26);
@@ -515,7 +525,8 @@ void DAWComponent::resized()
     int gridLeft = patternWidth + 80;
     int horizontalScrollBarY = getHeight() - 30;
     horizontalScrollBar.setBounds(gridLeft, horizontalScrollBarY, getWidth() - gridLeft - scrollBarWidth, 12);
-    int totalGridWidth = 128 * 80; // 128 beats * cellWidth
+    int cellWidth = (int)(80.0f * cellWidthMultiplier);
+    int totalGridWidth = 128 * cellWidth;
     horizontalScrollBar.setRangeLimits(0.0, totalGridWidth);
     horizontalScrollBar.setCurrentRange(horizontalScrollOffset, getWidth() - gridLeft);
 }
@@ -647,6 +658,7 @@ void DAWComponent::addTrack()
 {
     juce::String newName = "Track " + juce::String(trackNames.size() + 1);
     trackNames.add(newName);
+    saveTrack(newName, trackNames.size() - 1);
 
     Action action;
     action.type = Action::AddTrack;
@@ -674,7 +686,11 @@ void DAWComponent::removeTrack(int index)
         redoStack.clear();
         if (undoStack.size() > 10) undoStack.remove(0);
 
+        if (index < trackIds.size())
+            deleteTrackFromDB(trackIds[index]);
+
         trackNames.remove(index);
+        trackIds.remove(index);
         int totalHeight = trackNames.size() * trackHeight;
         trackScrollBar.setRangeLimits(0.0, totalHeight);
         resized();
@@ -729,7 +745,6 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
                         }
                         else if (result == 2)
                         {
-                            // Copy with incrementing number
                             juce::String baseName = patternNames[i];
                             int copyNumber = 1;
                             juce::String copyName = baseName + "(" + juce::String(copyNumber) + ")";
@@ -742,33 +757,37 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
 
                             int newPatternId = -1;
 
-                            // Save new pattern to database
                             if (currentProjectId >= 0)
                             {
-                                try
-                                {
-                                    SQLite::Statement query(DatabaseManager::get().db(),
-                                        "INSERT INTO Patterns (project_id, name) VALUES (?, ?)");
-                                    query.bind(1, currentProjectId);
-                                    query.bind(2, copyName.toStdString());
-                                    query.exec();
-                                    newPatternId = (int)DatabaseManager::get().db().getLastInsertRowid();
+                                std::string projectIdStr = std::to_string(currentProjectId);
+                                const char* insertParams[2] = { projectIdStr.c_str(), copyName.toRawUTF8() };
+                                PGresult* insertRes = PQexecParams(DatabaseManager::get().db(),
+                                    "INSERT INTO Patterns (project_id, name) VALUES ($1, $2) RETURNING pattern_id",
+                                    2, nullptr, insertParams, nullptr, nullptr, 0);
 
-                                    // Copy notes from original pattern
+                                if (PQresultStatus(insertRes) == PGRES_TUPLES_OK)
+                                {
+                                    newPatternId = std::stoi(PQgetvalue(insertRes, 0, 0));
+
                                     if (i < patternIds.size() && patternIds[i] >= 0)
                                     {
-                                        SQLite::Statement notesQuery(DatabaseManager::get().db(),
+                                        std::string newIdStr = std::to_string(newPatternId);
+                                        std::string oldIdStr = std::to_string(patternIds[i]);
+                                        const char* noteParams[2] = { newIdStr.c_str(), oldIdStr.c_str() };
+                                        PGresult* notesRes = PQexecParams(DatabaseManager::get().db(),
                                             "INSERT INTO PatternNotes (pattern_id, pitch, beat, lyric) "
-                                            "SELECT ?, pitch, beat, lyric FROM PatternNotes WHERE pattern_id = ?");
-                                        notesQuery.bind(1, newPatternId);
-                                        notesQuery.bind(2, patternIds[i]);
-                                        notesQuery.exec();
+                                            "SELECT $1::integer, pitch, beat, lyric FROM PatternNotes WHERE pattern_id = $2",
+                                            2, nullptr, noteParams, nullptr, nullptr, 0);
+                                        if (PQresultStatus(notesRes) != PGRES_COMMAND_OK)
+                                            DBG("Pattern copy notes error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+                                        PQclear(notesRes);
                                     }
                                 }
-                                catch (const std::exception& e)
+                                else
                                 {
-                                    DBG("Pattern copy error: " + juce::String(e.what()));
+                                    DBG("Pattern copy error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
                                 }
+                                PQclear(insertRes);
                             }
 
                             patternNames.add(copyName);
@@ -783,10 +802,14 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
                             {
                                 try
                                 {
-                                    SQLite::Statement query(DatabaseManager::get().db(),
-                                        "DELETE FROM Patterns WHERE pattern_id = ?");
-                                    query.bind(1, patternIds[i]);
-                                    query.exec();
+                                    std::string patternIdStr = std::to_string(patternIds[i]);
+                                    const char* params[1] = { patternIdStr.c_str() };
+                                    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                                        "DELETE FROM Patterns WHERE pattern_id = $1",
+                                        1, nullptr, params, nullptr, nullptr, 0);
+                                    if (PQresultStatus(res) != PGRES_COMMAND_OK)
+                                        DBG("Pattern delete error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+                                    PQclear(res);
                                 }
                                 catch (const std::exception& e)
                                 {
@@ -812,7 +835,32 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
             }
         }
     }
+    // Check for clip resize
+    if (!e.mods.isRightButtonDown())
+    {
+        int patternWidth = 150;
+        int trackHeaderWidth = 80;
+        int gridLeft = patternWidth + trackHeaderWidth;
+        int cellWidth = (int)(80.0f * cellWidthMultiplier);
 
+        for (int i = 0; i < placedClips.size(); ++i)
+        {
+            auto& clip = placedClips.getReference(i);
+            int trackY = trackAreaTop + clip.trackIndex * trackHeight - (int)trackScrollOffset;
+            int clipX = gridLeft + (int)(clip.startBeat * cellWidth) - (int)horizontalScrollOffset;
+            int clipW = (int)(clip.duration * cellWidth);
+
+            // Check if clicking on the right edge (last 8 pixels)
+            juce::Rectangle<int> resizeZone(clipX + clipW - 8, trackY, 8, trackHeight);
+            if (resizeZone.contains(e.x, e.y))
+            {
+                isResizingClip = true;
+                resizingClipIndex = i;
+                resizeOriginalDuration = clip.duration;
+                return;
+            }
+        }
+    }
     // Check track remove button
     for (int i = 0; i < trackNames.size(); ++i)
     {
@@ -861,20 +909,22 @@ void DAWComponent::addPattern()
     // Save to database
     if (currentProjectId >= 0)
     {
-        try
-        {
-            SQLite::Statement query(DatabaseManager::get().db(),
-                "INSERT INTO Patterns (project_id, name) VALUES (?, ?)");
-            query.bind(1, currentProjectId);
-            query.bind(2, newName.toStdString());
-            query.exec();
-            newPatternId = (int)DatabaseManager::get().db().getLastInsertRowid();
-            DBG("Pattern saved with ID: " + juce::String(newPatternId));
-        }
-        catch (const std::exception& e)
-        {
-            DBG("Pattern save error: " + juce::String(e.what()));
-        }
+            std::string projectIdStr = std::to_string(currentProjectId);
+            const char* params[2] = { projectIdStr.c_str(), newName.toRawUTF8() };
+            PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                "INSERT INTO Patterns (project_id, name) VALUES ($1, $2) RETURNING pattern_id",
+                2, nullptr, params, nullptr, nullptr, 0);
+
+            if (PQresultStatus(res) == PGRES_TUPLES_OK)
+            {
+                newPatternId = std::stoi(PQgetvalue(res, 0, 0));
+                DBG("Pattern saved with ID: " + juce::String(newPatternId));
+            }
+            else
+            {
+                DBG("Pattern save error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+            }
+            PQclear(res);
     }
 
     patternNames.add(newName);
@@ -1024,6 +1074,25 @@ void DAWComponent::timerCallback()
 
 void DAWComponent::mouseDrag(const juce::MouseEvent& e)
 {
+    if (isResizingClip && resizingClipIndex >= 0)
+    {
+        int menuBarHeight = 25;
+        int toolbarHeight = 40;
+        int toolbar2Height = 35;
+        int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
+        int patternWidth = 150;
+        int trackHeaderWidth = 80;
+        int gridLeft = patternWidth + trackHeaderWidth;
+        int cellWidth = (int)(80.0f * cellWidthMultiplier);
+
+        double beat = (double)(e.x - gridLeft + (int)horizontalScrollOffset) / cellWidth;
+        double newDuration = beat - placedClips[resizingClipIndex].startBeat;
+        newDuration = std::max(0.5, newDuration);
+        placedClips.getReference(resizingClipIndex).duration = newDuration;
+        repaint();
+        return;
+    }
+
     if (!isDraggingPattern && !isDraggingClip)
     {
         int menuBarHeight = 25;
@@ -1081,6 +1150,14 @@ void DAWComponent::mouseDrag(const juce::MouseEvent& e)
 
 void DAWComponent::mouseUp(const juce::MouseEvent& e)
 {
+    if (isResizingClip && resizingClipIndex >= 0)
+    {
+        updateClip(placedClips[resizingClipIndex]);
+        isResizingClip = false;
+        resizingClipIndex = -1;
+        repaint();
+        return;
+    }
     int menuBarHeight = 25;
     int toolbarHeight = 40;
     int toolbar2Height = 35;
@@ -1103,6 +1180,7 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
             redoStack.clear();
             if (undoStack.size() > 10) undoStack.remove(0);
 
+            deleteClip(placedClips[draggingClipIndex].clipId);
             placedClips.remove(draggingClipIndex);
         }
         else
@@ -1154,6 +1232,7 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
 
                     placedClips.getReference(draggingClipIndex).startBeat = beat;
                     placedClips.getReference(draggingClipIndex).trackIndex = i;
+                    updateClip(placedClips[draggingClipIndex]);
                     break;
                 }
             }
@@ -1197,6 +1276,7 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
                 clip.patternIndex = draggingPatternIndex;
                 clip.trackIndex = i;
                 clip.startBeat = beat;
+                saveClip(clip);
                 placedClips.add(clip);
 
                 Action action;
@@ -1227,19 +1307,29 @@ void DAWComponent::loadPatterns()
 
     try
     {
-        SQLite::Statement query(DatabaseManager::get().db(),
-            "SELECT pattern_id, name FROM Patterns WHERE project_id = ? ORDER BY pattern_id ASC");
-        query.bind(1, currentProjectId);
+        std::string projectIdStr = std::to_string(currentProjectId);
+        const char* params[1] = { projectIdStr.c_str() };
+        PGresult* res = PQexecParams(DatabaseManager::get().db(),
+            "SELECT pattern_id, name FROM Patterns WHERE project_id = $1 ORDER BY pattern_id ASC",
+            1, nullptr, params, nullptr, nullptr, 0);
 
-        while (query.executeStep())
+        if (PQresultStatus(res) == PGRES_TUPLES_OK)
         {
-            int id = query.getColumn(0).getInt();
-            juce::String name = juce::String(query.getColumn(1).getString());
-            patternIds.add(id);
-            patternNames.add(name);
+            int rows = PQntuples(res);
+            for (int row = 0; row < rows; ++row)
+            {
+                int id = std::stoi(PQgetvalue(res, row, 0));
+                juce::String name = juce::String(PQgetvalue(res, row, 1));
+                patternIds.add(id);
+                patternNames.add(name);
+            }
+            DBG("Loaded " + juce::String(patternNames.size()) + " patterns");
         }
-
-        DBG("Loaded " + juce::String(patternNames.size()) + " patterns");
+        else
+        {
+            DBG("Pattern load error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+        }
+        PQclear(res);
     }
     catch (const std::exception& e)
     {
@@ -1264,14 +1354,12 @@ void DAWComponent::performUndo()
     case Action::AddPattern:
         if (action.patternId >= 0)
         {
-            try
-            {
-                SQLite::Statement query(DatabaseManager::get().db(),
-                    "DELETE FROM Patterns WHERE pattern_id = ?");
-                query.bind(1, action.patternId);
-                query.exec();
-            }
-            catch (...) {}
+            std::string idStr = std::to_string(action.patternId);
+            const char* params[1] = { idStr.c_str() };
+            PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                "DELETE FROM Patterns WHERE pattern_id = $1",
+                1, nullptr, params, nullptr, nullptr, 0);
+            PQclear(res);
         }
         patternNames.remove(action.patternIndex);
         patternIds.remove(action.patternIndex);
@@ -1282,16 +1370,13 @@ void DAWComponent::performUndo()
         patternIds.insert(action.patternIndex, action.patternId);
         if (action.patternId >= 0)
         {
-            try
-            {
-                SQLite::Statement query(DatabaseManager::get().db(),
-                    "INSERT INTO Patterns (pattern_id, project_id, name) VALUES (?, ?, ?)");
-                query.bind(1, action.patternId);
-                query.bind(2, currentProjectId);
-                query.bind(3, action.patternName.toStdString());
-                query.exec();
-            }
-            catch (...) {}
+            std::string idStr = std::to_string(action.patternId);
+            std::string projectIdStr = std::to_string(currentProjectId);
+            const char* params[3] = { idStr.c_str(), projectIdStr.c_str(), action.patternName.toRawUTF8() };
+            PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                "INSERT INTO Patterns (pattern_id, project_id, name) VALUES ($1, $2, $3)",
+                3, nullptr, params, nullptr, nullptr, 0);
+            PQclear(res);
         }
         break;
 
@@ -1410,26 +1495,265 @@ void DAWComponent::loadPatternNotes()
 
         if (patternId >= 0)
         {
-            try
-            {
-                SQLite::Statement query(DatabaseManager::get().db(),
-                    "SELECT pitch, beat FROM PatternNotes WHERE pattern_id = ? ORDER BY beat ASC");
-                query.bind(1, patternId);
+                std::string patternIdStr = std::to_string(patternId);
+                const char* params[1] = { patternIdStr.c_str() };
+                PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                    "SELECT pitch, beat, duration FROM PatternNotes WHERE pattern_id = $1 ORDER BY beat ASC",
+                    1, nullptr, params, nullptr, nullptr, 0);
 
-                while (query.executeStep())
+                if (PQresultStatus(res) == PGRES_TUPLES_OK)
                 {
-                    NotePreview n;
-                    n.pitch = query.getColumn(0).getInt();
-                    n.beat = query.getColumn(1).getInt();
-                    notes.add(n);
+                    int rows = PQntuples(res);
+                    for (int row = 0; row < rows; ++row)
+                    {
+                        NotePreview n;
+                        n.pitch = std::stoi(PQgetvalue(res, row, 0));
+                        n.beat = std::stoi(PQgetvalue(res, row, 1));
+                        n.duration = std::stoi(PQgetvalue(res, row, 2));
+                        notes.add(n);
+                    }
                 }
-            }
-            catch (const std::exception& e)
-            {
-                DBG("Load pattern notes error: " + juce::String(e.what()));
-            }
+                else
+                {
+                    DBG("Load pattern notes error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+                }
+                PQclear(res);
         }
 
         patternNotePreviews.add(notes);
     }
+}
+
+void DAWComponent::saveClip(const PlacedClip& clip)
+{
+    if (currentProjectId < 0 || clip.patternIndex >= patternIds.size()) return;
+
+    int patternId = patternIds[clip.patternIndex];
+    std::string projectIdStr = std::to_string(currentProjectId);
+    std::string patternIdStr = std::to_string(patternId);
+    std::string trackIndexStr = std::to_string(clip.trackIndex);
+    std::string startBeatStr = std::to_string(clip.startBeat);
+    std::string durationStr = std::to_string(clip.duration);
+
+    const char* params[5] = {
+        projectIdStr.c_str(),
+        patternIdStr.c_str(),
+        trackIndexStr.c_str(),
+        startBeatStr.c_str(),
+        durationStr.c_str()
+    };
+
+    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+        "INSERT INTO PlacedClips (project_id, pattern_id, track_index, start_beat, duration) "
+        "VALUES ($1, $2, $3, $4, $5) RETURNING clip_id",
+        5, nullptr, params, nullptr, nullptr, 0);
+
+    if (PQresultStatus(res) == PGRES_TUPLES_OK)
+        DBG("Clip saved with ID: " + juce::String(std::stoi(PQgetvalue(res, 0, 0))));
+    else
+        DBG("Clip save error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+
+    PQclear(res);
+}
+
+void DAWComponent::deleteClip(int clipId)
+{
+    if (clipId < 0) return;
+
+    std::string clipIdStr = std::to_string(clipId);
+    const char* params[1] = { clipIdStr.c_str() };
+
+    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+        "DELETE FROM PlacedClips WHERE clip_id = $1",
+        1, nullptr, params, nullptr, nullptr, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK)
+        DBG("Clip delete error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+
+    PQclear(res);
+}
+
+void DAWComponent::loadClips()
+{
+    placedClips.clear();
+
+    if (currentProjectId < 0) return;
+
+    std::string projectIdStr = std::to_string(currentProjectId);
+    const char* params[1] = { projectIdStr.c_str() };
+
+    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+        "SELECT clip_id, pattern_id, track_index, start_beat, duration FROM PlacedClips WHERE project_id = $1",
+        1, nullptr, params, nullptr, nullptr, 0);
+
+    if (PQresultStatus(res) == PGRES_TUPLES_OK)
+    {
+        int rows = PQntuples(res);
+        for (int row = 0; row < rows; ++row)
+        {
+            int clipId = std::stoi(PQgetvalue(res, row, 0));
+            int patternId = std::stoi(PQgetvalue(res, row, 1));
+            int trackIndex = std::stoi(PQgetvalue(res, row, 2));
+            double startBeat = std::stod(PQgetvalue(res, row, 3));
+            double duration = std::stod(PQgetvalue(res, row, 4));
+
+            // Find the pattern index from the pattern ID
+            int patternIndex = -1;
+            for (int i = 0; i < patternIds.size(); ++i)
+            {
+                if (patternIds[i] == patternId)
+                {
+                    patternIndex = i;
+                    break;
+                }
+            }
+
+            if (patternIndex >= 0)
+            {
+                PlacedClip clip;
+                clip.clipId = clipId;
+                clip.patternIndex = patternIndex;
+                clip.trackIndex = trackIndex;
+                clip.startBeat = startBeat;
+                clip.duration = duration;
+                placedClips.add(clip);
+            }
+        }
+        DBG("Loaded " + juce::String(placedClips.size()) + " clips");
+    }
+    else
+    {
+        DBG("Clip load error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+    }
+    PQclear(res);
+}
+
+void DAWComponent::updateClip(const PlacedClip& clip)
+{
+    if (clip.clipId < 0) return;
+
+    std::string clipIdStr = std::to_string(clip.clipId);
+    std::string trackIndexStr = std::to_string(clip.trackIndex);
+    std::string startBeatStr = std::to_string(clip.startBeat);
+    std::string durationStr = std::to_string(clip.duration);
+
+    const char* params[4] = {
+        trackIndexStr.c_str(),
+        startBeatStr.c_str(),
+        durationStr.c_str(),
+        clipIdStr.c_str()
+    };
+
+    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+        "UPDATE PlacedClips SET track_index = $1, start_beat = $2, duration = $3 WHERE clip_id = $4",
+        4, nullptr, params, nullptr, nullptr, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK)
+        DBG("Clip update error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+
+    PQclear(res);
+}
+
+void DAWComponent::saveTrack(const juce::String& trackName, int orderIndex)
+{
+    if (currentProjectId < 0) return;
+
+    std::string projectIdStr = std::to_string(currentProjectId);
+    std::string orderIndexStr = std::to_string(orderIndex);
+
+    const char* params[3] = { projectIdStr.c_str(), trackName.toRawUTF8(), orderIndexStr.c_str() };
+
+    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+        "INSERT INTO Tracks (project_id, name, type, order_index) VALUES ($1, $2, 'vocal', $3) RETURNING track_id",
+        3, nullptr, params, nullptr, nullptr, 0);
+
+    if (PQresultStatus(res) == PGRES_TUPLES_OK)
+    {
+        int trackId = std::stoi(PQgetvalue(res, 0, 0));
+        trackIds.add(trackId);
+        DBG("Track saved with ID: " + juce::String(trackId));
+    }
+    else
+    {
+        DBG("Track save error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+        trackIds.add(-1);
+    }
+    PQclear(res);
+}
+
+void DAWComponent::deleteTrackFromDB(int trackId)
+{
+    if (trackId < 0) return;
+
+    std::string trackIdStr = std::to_string(trackId);
+    const char* params[1] = { trackIdStr.c_str() };
+
+    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+        "DELETE FROM Tracks WHERE track_id = $1",
+        1, nullptr, params, nullptr, nullptr, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK)
+        DBG("Track delete error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+
+    PQclear(res);
+}
+
+void DAWComponent::loadTracks()
+{
+    trackNames.clear();
+    trackIds.clear();
+
+    if (currentProjectId < 0) return;
+
+    std::string projectIdStr = std::to_string(currentProjectId);
+    const char* params[1] = { projectIdStr.c_str() };
+
+    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+        "SELECT track_id, name FROM Tracks WHERE project_id = $1 ORDER BY order_index ASC",
+        1, nullptr, params, nullptr, nullptr, 0);
+
+    if (PQresultStatus(res) == PGRES_TUPLES_OK)
+    {
+        int rows = PQntuples(res);
+        for (int row = 0; row < rows; ++row)
+        {
+            trackIds.add(std::stoi(PQgetvalue(res, row, 0)));
+            trackNames.add(juce::String(PQgetvalue(res, row, 1)));
+        }
+        DBG("Loaded " + juce::String(trackNames.size()) + " tracks");
+    }
+    else
+    {
+        DBG("Track load error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+    }
+    PQclear(res);
+}
+
+void DAWComponent::mouseMove(const juce::MouseEvent& e)
+{
+    int menuBarHeight = 25;
+    int toolbarHeight = 40;
+    int toolbar2Height = 35;
+    int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
+    int trackAreaTop = gridTop + 20;
+    int patternWidth = 150;
+    int trackHeaderWidth = 80;
+    int gridLeft = patternWidth + trackHeaderWidth;
+    int cellWidth = (int)(80.0f * cellWidthMultiplier);
+
+    for (int i = 0; i < placedClips.size(); ++i)
+    {
+        auto& clip = placedClips.getReference(i);
+        int trackY = trackAreaTop + clip.trackIndex * trackHeight - (int)trackScrollOffset;
+        int clipX = gridLeft + (int)(clip.startBeat * cellWidth) - (int)horizontalScrollOffset;
+        int clipW = (int)(clip.duration * cellWidth);
+
+        juce::Rectangle<int> resizeZone(clipX + clipW - 8, trackY, 8, trackHeight);
+        if (resizeZone.contains(e.x, e.y))
+        {
+            setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+            return;
+        }
+    }
+    setMouseCursor(juce::MouseCursor::NormalCursor);
 }

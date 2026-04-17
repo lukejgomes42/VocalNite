@@ -1,5 +1,7 @@
 #include "ProjectManagerComponent.h"
 #include "../Projects/Project.h"
+#include "../Database/DatabaseManager.h"
+#include <libpq-fe.h>
 
 // =========================
 // Modal component for creating a project
@@ -135,7 +137,8 @@ ProjectManagerComponent::ProjectManagerComponent()
                         return;
                     }
 
-                    if (currentProject.createNew(projectFolder, projectName))
+                    int userId = DatabaseManager::get().getUserId(currentUsername);
+                    if (currentProject.createNew(projectFolder, projectName, userId))
                     {
                         statusLabel.setText("", juce::dontSendNotification);
                         refreshRecentProjects();
@@ -158,40 +161,24 @@ ProjectManagerComponent::ProjectManagerComponent()
     // OPEN
     openButton.onClick = [this]()
         {
-            juce::File projectsFolder = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
-                .getChildFile("VocalNite")
-                .getChildFile("Projects");
-
-            if (!projectsFolder.exists())
-            {
-                statusLabel.setText("No projects found", juce::dontSendNotification);
-                return;
-            }
-
-            auto files = projectsFolder.findChildFiles(juce::File::findFiles, true, "*.vnite");
-
-            if (files.isEmpty())
+            if (recentProjectNames.isEmpty())
             {
                 statusLabel.setText("No projects to open", juce::dontSendNotification);
                 return;
             }
 
-            // Just open the file chooser inline using a popup menu
             juce::PopupMenu menu;
-            for (int i = 0; i < files.size(); ++i)
-                menu.addItem(i + 1, files[i].getParentDirectory().getFileName());
+            for (int i = 0; i < recentProjectNames.size(); ++i)
+                menu.addItem(i + 1, recentProjectNames[i]);
 
             menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(openButton),
-                [this, files](int result)
+                [this](int result)
                 {
                     if (result > 0)
                     {
-                        if (currentProject.load(files[result - 1]))
-                        {
-                            statusLabel.setText("", juce::dontSendNotification);
-                            if (onOpenProject)
-                                onOpenProject(currentProject.getName(), currentProject.getProjectId());
-                        }
+                        statusLabel.setText("", juce::dontSendNotification);
+                        if (onOpenProject)
+                            onOpenProject(recentProjectNames[result - 1], recentProjectIds[result - 1]);
                     }
                 });
         };
@@ -202,13 +189,29 @@ ProjectManagerComponent::ProjectManagerComponent()
 void ProjectManagerComponent::refreshRecentProjects()
 {
     recentFiles.clear();
+    recentProjectNames.clear();
+    recentProjectIds.clear();
 
-    juce::File projectsFolder = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
-        .getChildFile("VocalNite")
-        .getChildFile("Projects");
+    int userId = DatabaseManager::get().getUserId(currentUsername);
+    if (userId < 0) return;
 
-    if (projectsFolder.exists())
-        recentFiles = projectsFolder.findChildFiles(juce::File::findFiles, true, "*.vnite");
+    std::string userIdStr = std::to_string(userId);
+    const char* params[1] = { userIdStr.c_str() };
+
+    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+        "SELECT project_id, name FROM Projects WHERE user_id = $1 ORDER BY project_id DESC",
+        1, nullptr, params, nullptr, nullptr, 0);
+
+    if (PQresultStatus(res) == PGRES_TUPLES_OK)
+    {
+        int rows = PQntuples(res);
+        for (int i = 0; i < rows; ++i)
+        {
+            recentProjectIds.add(std::stoi(PQgetvalue(res, i, 0)));
+            recentProjectNames.add(juce::String(PQgetvalue(res, i, 1)));
+        }
+    }
+    PQclear(res);
 
     recentProjectsList.updateContent();
     recentProjectsList.repaint();
@@ -217,7 +220,7 @@ void ProjectManagerComponent::refreshRecentProjects()
 // ListBoxModel
 int ProjectManagerComponent::getNumRows()
 {
-    return recentFiles.isEmpty() ? 1 : recentFiles.size(); // 1 for empty message
+    return recentProjectNames.isEmpty() ? 1 : recentProjectNames.size();
 }
 
 void ProjectManagerComponent::paintListBoxItem(int rowNumber, juce::Graphics& g,
@@ -229,7 +232,7 @@ void ProjectManagerComponent::paintListBoxItem(int rowNumber, juce::Graphics& g,
         g.fillRect(0, 0, width, height);
     }
 
-    if (recentFiles.isEmpty())
+    if (recentProjectNames.isEmpty())
     {
         g.setColour(juce::Colour(100, 80, 120));
         g.setFont(juce::Font(13.0f));
@@ -244,8 +247,7 @@ void ProjectManagerComponent::paintListBoxItem(int rowNumber, juce::Graphics& g,
     // Project name
     g.setColour(juce::Colours::white);
     g.setFont(juce::Font(13.0f));
-    juce::String name = recentFiles[rowNumber].getParentDirectory().getFileName();
-    g.drawText(name, 32, 0, width - 48, height, juce::Justification::centredLeft);
+    g.drawText(recentProjectNames[rowNumber], 32, 0, width - 48, height, juce::Justification::centredLeft);
 
     // Separator line
     g.setColour(juce::Colour(40, 25, 60));
@@ -254,14 +256,10 @@ void ProjectManagerComponent::paintListBoxItem(int rowNumber, juce::Graphics& g,
 
 void ProjectManagerComponent::listBoxItemDoubleClicked(int row, const juce::MouseEvent&)
 {
-    if (recentFiles.isEmpty() || row >= recentFiles.size()) return;
+    if (recentProjectNames.isEmpty() || row >= recentProjectNames.size()) return;
 
-    if (currentProject.load(recentFiles[row]))
-    {
-        statusLabel.setText("", juce::dontSendNotification);
-        if (onOpenProject)
-            onOpenProject(currentProject.getName(), currentProject.getProjectId());
-    }
+    if (onOpenProject)
+        onOpenProject(recentProjectNames[row], recentProjectIds[row]);
 }
 
 void ProjectManagerComponent::paint(juce::Graphics& g)
@@ -328,4 +326,11 @@ juce::Rectangle<int> ProjectManagerComponent::getCentreCardBounds() const
     int cardX = (getWidth() - cardW) / 2;
     int cardY = 50 + (getHeight() - 50 - cardH) / 2;
     return { cardX, cardY, cardW, cardH };
+}
+
+void ProjectManagerComponent::setUsername(const juce::String& name)
+{
+    topBar.setUsername(name);
+    currentUsername = name;
+    refreshRecentProjects();
 }

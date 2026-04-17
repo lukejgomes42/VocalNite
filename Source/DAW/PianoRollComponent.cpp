@@ -1,6 +1,7 @@
 #include <JuceHeader.h>
 #include "PianoRollComponent.h"
 #include "../Database/DatabaseManager.h"
+#include <libpq-fe.h>
 
 PianoRollComponent::PianoRollComponent(int patternId)
     : currentPatternId(patternId)
@@ -33,20 +34,18 @@ PianoRollComponent::PianoRollComponent(int patternId)
                 // Update in database
                 if (currentPatternId >= 0)
                 {
-                    try
-                    {
-                        SQLite::Statement query(DatabaseManager::get().db(),
-                            "UPDATE PatternNotes SET lyric = ? WHERE pattern_id = ? AND pitch = ? AND beat = ?");
-                        query.bind(1, lyric.toStdString());
-                        query.bind(2, currentPatternId);
-                        query.bind(3, placedNotes[editingNoteIndex].pitch);
-                        query.bind(4, placedNotes[editingNoteIndex].beat);
-                        query.exec();
-                    }
-                    catch (const std::exception& e)
-                    {
-                        DBG("Lyric save error: " + juce::String(e.what()));
-                    }
+                    std::string patternIdStr = std::to_string(currentPatternId);
+                    std::string pitchStr = std::to_string(placedNotes[editingNoteIndex].pitch);
+                    std::string beatStr = std::to_string(placedNotes[editingNoteIndex].beat);
+                    const char* params[4] = { lyric.toRawUTF8(), patternIdStr.c_str(), pitchStr.c_str(), beatStr.c_str() };
+
+                    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                        "UPDATE PatternNotes SET lyric = $1 WHERE pattern_id = $2 AND pitch = $3 AND beat = $4",
+                        4, nullptr, params, nullptr, nullptr, 0);
+
+                    if (PQresultStatus(res) != PGRES_COMMAND_OK)
+                        DBG("Lyric save error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+                    PQclear(res);
                 }
 
                 editingNoteIndex = -1;
@@ -105,9 +104,11 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
 
             for (int i = placedNotes.size() - 1; i >= 0; --i)
             {
-                if (placedNotes[i].pitch == pitch && placedNotes[i].beat == beat)
+                if (placedNotes[i].pitch == pitch &&
+                    beat >= placedNotes[i].beat &&
+                    beat < placedNotes[i].beat + placedNotes[i].duration)
                 {
-                    deleteNote(pitch, beat);
+                    deleteNote(placedNotes[i].pitch, placedNotes[i].beat);
                     placedNotes.remove(i);
                     repaint();
                     return;
@@ -128,6 +129,22 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
     if (beat < 0 || beat >= numBeats || pitch < 0 || pitch >= numKeys)
         return;
 
+    // Check for note resize
+    for (int i = placedNotes.size() - 1; i >= 0; --i)
+    {
+        auto& note = placedNotes.getReference(i);
+        int noteX = keyWidth + note.beat * cellWidth - (int)horizontalOffset;
+        int noteY = headerHeight + note.pitch * noteHeight - (int)verticalOffset;
+        int noteW = cellWidth * note.duration;
+
+        juce::Rectangle<int> resizeZone(noteX + noteW - 6, noteY, 6, noteHeight);
+        if (resizeZone.contains(e.x, e.y))
+        {
+            isResizingNote = true;
+            resizingNoteIndex = i;
+            return;
+        }
+    }
     // Toggle note on/off
     for (int i = placedNotes.size() - 1; i >= 0; --i)
     {
@@ -164,8 +181,43 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
     repaint();
 }
 
-void PianoRollComponent::mouseUp(const juce::MouseEvent& e) {}
-void PianoRollComponent::mouseDrag(const juce::MouseEvent& e) {}
+void PianoRollComponent::mouseUp(const juce::MouseEvent& e)
+{
+    if (isResizingNote && resizingNoteIndex >= 0)
+    {
+        auto& note = placedNotes[resizingNoteIndex];
+        std::string patternIdStr = std::to_string(currentPatternId);
+        std::string pitchStr = std::to_string(note.pitch);
+        std::string beatStr = std::to_string(note.beat);
+        std::string durationStr = std::to_string(note.duration);
+        const char* params[4] = { durationStr.c_str(), patternIdStr.c_str(), pitchStr.c_str(), beatStr.c_str() };
+
+        PGresult* res = PQexecParams(DatabaseManager::get().db(),
+            "UPDATE PatternNotes SET duration = $1 WHERE pattern_id = $2 AND pitch = $3 AND beat = $4",
+            4, nullptr, params, nullptr, nullptr, 0);
+
+        if (PQresultStatus(res) != PGRES_COMMAND_OK)
+            DBG("Note resize error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+        PQclear(res);
+
+        isResizingNote = false;
+        resizingNoteIndex = -1;
+        repaint();
+    }
+}
+
+void PianoRollComponent::mouseDrag(const juce::MouseEvent& e)
+{
+    if (isResizingNote && resizingNoteIndex >= 0)
+    {
+        int gridX = e.x - keyWidth + (int)horizontalOffset;
+        int newEnd = gridX / cellWidth + 1;
+        int startBeat = placedNotes[resizingNoteIndex].beat;
+        int newDuration = std::max(1, newEnd - startBeat);
+        placedNotes.getReference(resizingNoteIndex).duration = newDuration;
+        repaint();
+    }
+}
 
 void PianoRollComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
@@ -277,16 +329,20 @@ void PianoRollComponent::paint(juce::Graphics& g)
         if (x + cellWidth < keyWidth || x > getWidth()) continue;
         if (y + noteHeight < headerHeight || y > getHeight()) continue;
 
+        int noteW = cellWidth * note.duration;
         g.setColour(getNoteColour(note.pitch));
-        g.fillRoundedRectangle(x + 1, y + 1, cellWidth - 2, noteHeight - 2, 3.0f);
+        g.fillRoundedRectangle(x + 1, y + 1, noteW - 2, noteHeight - 2, 3.0f);
         g.setColour(juce::Colours::white.withAlpha(0.4f));
-        g.drawRoundedRectangle(x + 1, y + 1, cellWidth - 2, noteHeight - 2, 3.0f, 1.0f);
+        g.drawRoundedRectangle(x + 1, y + 1, noteW - 2, noteHeight - 2, 3.0f, 1.0f);
         if (note.lyric.isNotEmpty())
         {
             g.setColour(juce::Colours::white);
             g.setFont(10.0f);
-            g.drawText(note.lyric, x + 2, y + 1, cellWidth - 4, noteHeight - 2, juce::Justification::centred);
+            g.drawText(note.lyric, x + 2, y + 1, noteW - 4, noteHeight - 2, juce::Justification::centred);
         }
+        // Resize handle on right edge
+        g.setColour(juce::Colours::white.withAlpha(0.3f));
+        g.fillRect(x + noteW - 4, y + 2, 3, noteHeight - 4);
     }
 
     // Clip boundary
@@ -306,64 +362,72 @@ void PianoRollComponent::resized()
     horizontalScroll.setCurrentRange(horizontalOffset, getWidth() - keyWidth);
 }
 
-void PianoRollComponent::saveNote(int pitch, int beat, const juce::String& lyric)
+void PianoRollComponent::saveNote(int pitch, int beat, const juce::String& lyric, int duration)
 {
     if (currentPatternId < 0) return;
-    try
-    {
-        SQLite::Statement query(DatabaseManager::get().db(),
-            "INSERT INTO PatternNotes (pattern_id, pitch, beat, lyric) VALUES (?, ?, ?, ?)");
-        query.bind(1, currentPatternId);
-        query.bind(2, pitch);
-        query.bind(3, beat);
-        query.bind(4, lyric.toStdString());
-        query.exec();
-    }
-    catch (const std::exception& e)
-    {
-        DBG("Save note error: " + juce::String(e.what()));
-    }
+
+    std::string patternIdStr = std::to_string(currentPatternId);
+    std::string pitchStr = std::to_string(pitch);
+    std::string beatStr = std::to_string(beat);
+    std::string durationStr = std::to_string(duration);
+    const char* params[5] = { patternIdStr.c_str(), pitchStr.c_str(), beatStr.c_str(), lyric.toRawUTF8(), durationStr.c_str() };
+
+    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+        "INSERT INTO PatternNotes (pattern_id, pitch, beat, lyric, duration) VALUES ($1, $2, $3, $4, $5)",
+        5, nullptr, params, nullptr, nullptr, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK)
+        DBG("Save note error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+    PQclear(res);
 }
 
 void PianoRollComponent::deleteNote(int pitch, int beat)
 {
     if (currentPatternId < 0) return;
-    try
-    {
-        SQLite::Statement query(DatabaseManager::get().db(),
-            "DELETE FROM PatternNotes WHERE pattern_id = ? AND pitch = ? AND beat = ?");
-        query.bind(1, currentPatternId);
-        query.bind(2, pitch);
-        query.bind(3, beat);
-        query.exec();
-    }
-    catch (const std::exception& e)
-    {
-        DBG("Delete note error: " + juce::String(e.what()));
-    }
+
+    std::string patternIdStr = std::to_string(currentPatternId);
+    std::string pitchStr = std::to_string(pitch);
+    std::string beatStr = std::to_string(beat);
+    const char* params[3] = { patternIdStr.c_str(), pitchStr.c_str(), beatStr.c_str() };
+
+    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+        "DELETE FROM PatternNotes WHERE pattern_id = $1 AND pitch = $2 AND beat = $3",
+        3, nullptr, params, nullptr, nullptr, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK)
+        DBG("Delete note error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+    PQclear(res);
 }
 
 void PianoRollComponent::loadNotes()
 {
     if (currentPatternId < 0) return;
     placedNotes.clear();
-    try
+
+    std::string patternIdStr = std::to_string(currentPatternId);
+    const char* params[1] = { patternIdStr.c_str() };
+
+    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+        "SELECT pitch, beat, lyric, duration FROM PatternNotes WHERE pattern_id = $1",
+        1, nullptr, params, nullptr, nullptr, 0);
+
+    if (PQresultStatus(res) == PGRES_TUPLES_OK)
     {
-        SQLite::Statement query(DatabaseManager::get().db(),
-            "SELECT pitch, beat, lyric FROM PatternNotes WHERE pattern_id = ?");
-        query.bind(1, currentPatternId);
-        while (query.executeStep())
+        int rows = PQntuples(res);
+        for (int row = 0; row < rows; ++row)
         {
             Note n;
-            n.pitch = query.getColumn(0).getInt();
-            n.beat = query.getColumn(1).getInt();
-            n.lyric = juce::String(query.getColumn(2).getString());
+            n.pitch = std::stoi(PQgetvalue(res, row, 0));
+            n.beat = std::stoi(PQgetvalue(res, row, 1));
+            n.lyric = juce::String(PQgetvalue(res, row, 2));
+            n.duration = std::stoi(PQgetvalue(res, row, 3));
             placedNotes.add(n);
         }
         DBG("Loaded " + juce::String(placedNotes.size()) + " notes");
     }
-    catch (const std::exception& e)
+    else
     {
-        DBG("Load notes error: " + juce::String(e.what()));
+        DBG("Load notes error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
     }
+    PQclear(res);
 }

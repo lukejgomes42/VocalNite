@@ -9,8 +9,7 @@
     your controls and content.
 */
 class MainComponent : public juce::Component,
-    private juce::Timer,
-    private juce::MouseListener
+    private juce::Timer
 {
 public:
     //==============================================================================
@@ -31,13 +30,14 @@ private:
     juce::Label titleLabel;
     juce::TextButton signupButton{ "Sign Up" };
     juce::TextButton loginButton{ "Login" };
+    juce::TextButton verifyButton{ "Verify Account" };
 
     void showAuthDialog(const juce::String& type);
+    void showVerifyDialog();
 
     // Animation
-    GlowLines glowLines { 5 };
-    StarSystem starSystem { 50 };
-    
+    GlowLines glowLines{ 5 };
+    StarSystem starSystem{ 50 };
 
     void timerCallback() override;
 

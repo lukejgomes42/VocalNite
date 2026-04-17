@@ -5,7 +5,7 @@
 //==============================================================================
 MainComponent::MainComponent()
 {
-    DatabaseManager::get().testDB();
+    DatabaseManager::get().testPostgresConnection();
 
     setSize(600, 400);
     starSystem.setBounds(getWidth(), getHeight());
@@ -26,6 +26,13 @@ MainComponent::MainComponent()
 
     signupButton.onClick = [this] { showAuthDialog("Sign Up"); };
     loginButton.onClick = [this] { showAuthDialog("Login"); };
+
+    addAndMakeVisible(verifyButton);
+    verifyButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0, 120, 80));
+    verifyButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    verifyButton.onClick = [this] { showVerifyDialog(); };
+
+    verifyButton.setVisible(false);
 
     // Button style
     signupButton.setColour(juce::TextButton::buttonColourId, juce::Colour(80, 0, 120));
@@ -72,6 +79,8 @@ void MainComponent::resized()
     auto buttonArea = area.removeFromTop(50).reduced(100, 0);
     signupButton.setBounds(buttonArea.removeFromLeft(buttonArea.getWidth() / 2).reduced(10));
     loginButton.setBounds(buttonArea.reduced(10));
+
+    verifyButton.setBounds(10, 10, 120, 24);
 }
 
 void MainComponent::timerCallback()
@@ -88,6 +97,8 @@ void MainComponent::showAuthDialog(const juce::String& type)
         juce::AlertWindow::NoIcon);
 
     dialog->addTextEditor("username", "", "Username:");
+    if (type == "Sign Up")
+        dialog->addTextEditor("email", "", "Email:");
     dialog->addTextEditor("password", "", "Password:");
     dialog->getTextEditor("password")->setPasswordCharacter('*');
 
@@ -96,7 +107,7 @@ void MainComponent::showAuthDialog(const juce::String& type)
 
     dialog->enterModalState(true,
         juce::ModalCallbackFunction::create(
-            [this, dialog, type] (int result)
+            [this, dialog, type](int result)
             {
                 if (result == 1)
                 {
@@ -111,16 +122,42 @@ void MainComponent::showAuthDialog(const juce::String& type)
 
                     if (type == "Sign Up")
                     {
-                        bool success = DatabaseManager::get().signUp(username, password, "standard");
+                        juce::String email = dialog->getTextEditorContents("email");
+                        if (email.isEmpty())
+                        {
+                            DBG("Email is empty");
+                            return;
+                        }
+
+                        // Check email domain for educational account
+                        juce::String userType = email.endsWithIgnoreCase("@southernct.edu") ? "educational" : "standard";
+
+                        bool success = DatabaseManager::get().signUp(username, email, password, userType);
                         if (success)
                         {
                             DBG("Account created successfully!");
-                            if (onAuthenticationSuccess)
-                                onAuthenticationSuccess(username);
+                            if (userType == "educational")
+                            {
+                                verifyButton.setVisible(true);
+                                juce::AlertWindow::showMessageBoxAsync(
+                                    juce::AlertWindow::InfoIcon,
+                                    "Account Created!",
+                                    "A verification token has been sent to " + email + ".\n\nPlease check your email and use the Verify Account button to verify your account before logging in.");
+                            }
+                            else
+                            {
+                                juce::AlertWindow::showMessageBoxAsync(
+                                    juce::AlertWindow::InfoIcon,
+                                    "Account Created!",
+                                    "Your account has been created! You can now log in.");
+                            }
                         }
                         else
                         {
-                            DBG("Sign up failed - username may already exist");
+                            juce::AlertWindow::showMessageBoxAsync(
+                                juce::AlertWindow::WarningIcon,
+                                "Sign Up Failed",
+                                "Username or email may already exist.");
                         }
                     }
                     else if (type == "Login")
@@ -134,7 +171,17 @@ void MainComponent::showAuthDialog(const juce::String& type)
                         }
                         else
                         {
-                            DBG("Login failed - incorrect username or password");
+                            juce::String error = DatabaseManager::get().getLastLoginError();
+                            if (error.isEmpty())
+                                error = "Login failed - incorrect username or password";
+
+                            if (error.contains("verify"))
+                                verifyButton.setVisible(true);
+
+                            juce::AlertWindow::showMessageBoxAsync(
+                                juce::AlertWindow::WarningIcon,
+                                "Login Failed",
+                                error);
                         }
                     }
                 }
@@ -159,3 +206,44 @@ void MainComponent::mouseExit(const juce::MouseEvent& event)
     else if (event.eventComponent == &loginButton)
         loginButton.setAlpha(1.0f);
 }
+
+void MainComponent::showVerifyDialog()
+{
+    auto* dialog = new juce::AlertWindow("Verify Account",
+        "Enter the verification token from your email:",
+        juce::AlertWindow::NoIcon);
+
+    dialog->addTextEditor("token", "", "Token:");
+    dialog->addButton("Verify", 1);
+    dialog->addButton("Cancel", 0);
+
+    dialog->enterModalState(true,
+        juce::ModalCallbackFunction::create(
+            [this, dialog](int result)
+            {
+                if (result == 1)
+                {
+                    juce::String token = dialog->getTextEditorContents("token").trim();
+                    if (token.isEmpty())
+                        return;
+
+                    bool success = DatabaseManager::get().verifyEmail(token);
+                    if (success)
+                    {
+                        juce::AlertWindow::showMessageBoxAsync(
+                            juce::AlertWindow::InfoIcon,
+                            "Success!",
+                            "Your email has been verified! You can now log in.");
+                    }
+                    else
+                    {
+                        juce::AlertWindow::showMessageBoxAsync(
+                            juce::AlertWindow::WarningIcon,
+                            "Verification Failed",
+                            "Invalid or expired token. Please try again.");
+                    }
+                }
+            }),
+        true);
+}
+

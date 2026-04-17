@@ -48,8 +48,11 @@ private:
         int pitch;
         int beat;
         juce::String lyric;
+        int duration = 1;
     };
     juce::Array<Note> placedNotes;
+    bool isResizingNote = false;
+    int resizingNoteIndex = -1;
 
     juce::TextEditor lyricEditor;
     int editingNoteIndex = -1;
@@ -57,7 +60,7 @@ private:
     // Helper functions
     bool isBlackKey(int noteIndex) const;
     juce::Colour getNoteColour(int pitch) const;
-    void saveNote(int pitch, int beat, const juce::String& lyric = "");
+    void saveNote(int pitch, int beat, const juce::String& lyric = "", int duration = 1);
     void deleteNote(int pitch, int beat);
     void loadNotes();
 

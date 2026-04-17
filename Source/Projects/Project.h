@@ -6,7 +6,7 @@ class Project
 public:
     Project() = default;
 
-    bool createNew(const juce::File& folder, const juce::String& name);
+    bool createNew(const juce::File& folder, const juce::String& name, int userId);
     bool load(const juce::File& projectFile);
     bool save();
 
