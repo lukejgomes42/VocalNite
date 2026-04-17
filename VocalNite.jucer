@@ -39,7 +39,24 @@
         </GROUP>
       </GROUP>
     </GROUP>
+    <GROUP id="{CC5BC65B-F376-A0C4-B404-F75373FA6B4E}" name="Resources">
+      <GROUP id="{1041339F-3C22-1D18-C7F3-9992AA9CBC4D}" name="database">
+        <FILE id="nieQLr" name="vocalnitedb.db" compile="0" resource="1" file="Resources/database/vocalnitedb.db"/>
+      </GROUP>
+      <GROUP id="{9DAEC90A-2831-B319-702D-F8093E5D6BCD}" name="VoiceBank">
+        <GROUP id="{40680FFE-5081-E6E7-78F4-48733F34E85C}" name="A3"/>
+        <GROUP id="{23D366D1-9174-2208-69E9-2F51BC96BD3E}" name="C4"/>
+        <GROUP id="{1886D928-CDC3-BEFC-0C26-4F603FFFE5F9}" name="F4"/>
+      </GROUP>
+      <FILE id="pRDyA0" name="cmudict.txt" compile="0" resource="1" file="Resources/cmudict.txt"/>
+    </GROUP>
     <GROUP id="{69EC30F4-DBF3-583D-B33A-8D575564E6E7}" name="Source">
+      <GROUP id="{20215828-60B3-77C9-EABE-4AFB0DEBED24}" name="Audio">
+        <FILE id="EmFoGm" name="VocalSynthEngine.cpp" compile="1" resource="0"
+              file="Source/Audio/VocalSynthEngine.cpp"/>
+        <FILE id="dD3fCj" name="VocalSynthEngine.h" compile="0" resource="0"
+              file="Source/Audio/VocalSynthEngine.h"/>
+      </GROUP>
       <GROUP id="{54E36A8B-7473-4D98-4483-5978EF8BEF55}" name="DAW">
         <FILE id="j40C6N" name="DAWComponent.cpp" compile="1" resource="0"
               file="Source/DAW/DAWComponent.cpp"/>
@@ -83,139 +100,22 @@
         <FILE id="J3VMcV" name="MainComponent.h" compile="0" resource="0" file="Source/Main/MainComponent.h"/>
       </GROUP>
     </GROUP>
-    <GROUP id="{8A5EB334-0281-7D85-4197-9F4B09C0B1D6}" name="VoiceBank">
-      <GROUP id="{8170C841-F5D9-40F8-3019-A02768B2B3C1}" name="A3">
-        <FILE id="RXrOHY" name="AA_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/AA_A3.wav"/>
-        <FILE id="Daom9c" name="AE_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/AE_A3.wav"/>
-        <FILE id="mVmqvn" name="AH_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/AH_A3.wav"/>
-        <FILE id="xBPxzd" name="AO_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/AO_A3.wav"/>
-        <FILE id="f7x8TZ" name="AW_A3-2.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/AW_A3-2.wav"/>
-        <FILE id="IE3Uvr" name="AW_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/AW_A3.wav"/>
-        <FILE id="BTLAZb" name="AY_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/AY_A3.wav"/>
-        <FILE id="kHjtbd" name="B_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/B_A3.wav"/>
-        <FILE id="SwGU2H" name="CH_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/CH_A3.wav"/>
-        <FILE id="HkSWmG" name="D_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/D_A3.wav"/>
-        <FILE id="p8UnGH" name="DH_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/DH_A3.wav"/>
-        <FILE id="UakYWF" name="EH_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/EH_A3.wav"/>
-        <FILE id="H7ccTM" name="ER_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/ER_A3.wav"/>
-        <FILE id="jatCJc" name="EY_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/EY_A3.wav"/>
-        <FILE id="mYUJfA" name="F_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/F_A3.wav"/>
-        <FILE id="cC92Yg" name="G_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/G_A3.wav"/>
-        <FILE id="mWcI9Q" name="HH_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/HH_A3.wav"/>
-        <FILE id="Cckey5" name="IH_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/IH_A3.wav"/>
-        <FILE id="wJLyE5" name="IY_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/IY_A3.wav"/>
-        <FILE id="xEAHe9" name="JH_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/JH_A3.wav"/>
-        <FILE id="JaHgwo" name="K_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/K_A3.wav"/>
-        <FILE id="aRar5R" name="L_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/L_A3.wav"/>
-        <FILE id="hQPky4" name="M_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/M_A3.wav"/>
-        <FILE id="uuVeuP" name="N_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/N_A3.wav"/>
-        <FILE id="ekeweE" name="NG_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/NG_A3.wav"/>
-        <FILE id="F2AR8V" name="OW_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/OW_A3.wav"/>
-        <FILE id="ynfXsN" name="P_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/P_A3.wav"/>
-        <FILE id="homJjN" name="R_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/R_A3.wav"/>
-        <FILE id="GHV5sD" name="S_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/S_A3.wav"/>
-        <FILE id="p9tcCR" name="SH_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/SH_A3.wav"/>
-        <FILE id="ph0UPB" name="T_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/T_A3.wav"/>
-        <FILE id="uIePQT" name="TH_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/TH_A3.wav"/>
-        <FILE id="YZ5s1U" name="UH_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/UH_A3.wav"/>
-        <FILE id="aNqusG" name="UW_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/UW_A3.wav"/>
-        <FILE id="Rd6WmS" name="V_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/V_A3.wav"/>
-        <FILE id="Dhcup0" name="W_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/W_A3.wav"/>
-        <FILE id="Cvo7Mz" name="Y_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/Y_A3.wav"/>
-        <FILE id="YrU0BZ" name="Z_A3.wav" compile="0" resource="1" file="Resources/VoiceBank/A3/Z_A3.wav"/>
-      </GROUP>
-      <GROUP id="{7A2BFB83-686A-89BC-417A-6FDF97E7F773}" name="C4">
-        <FILE id="uOaHZB" name="AA_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/AA_C4.wav"/>
-        <FILE id="lksQhN" name="AE_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/AE_C4.wav"/>
-        <FILE id="ixAeQ2" name="AH_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/AH_C4.wav"/>
-        <FILE id="HVFFrM" name="AO_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/AO_C4.wav"/>
-        <FILE id="Sff8q5" name="AW_C4-2.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/AW_C4-2.wav"/>
-        <FILE id="vUb1AM" name="AW_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/AW_C4.wav"/>
-        <FILE id="Ng8xhe" name="AY_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/AY_C4.wav"/>
-        <FILE id="D3ud7u" name="B_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/B_C4.wav"/>
-        <FILE id="ivAzv8" name="CH_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/CH_C4.wav"/>
-        <FILE id="LkawN4" name="D_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/D_C4.wav"/>
-        <FILE id="BTaJor" name="DH_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/DH_C4.wav"/>
-        <FILE id="b5qbIF" name="EH_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/EH_C4.wav"/>
-        <FILE id="vM41rC" name="ER_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/ER_C4.wav"/>
-        <FILE id="ZV2ZUW" name="EY_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/EY_C4.wav"/>
-        <FILE id="mfWZ57" name="F_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/F_C4.wav"/>
-        <FILE id="tO9wTH" name="G_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/G_C4.wav"/>
-        <FILE id="MhTkqb" name="HH_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/HH_C4.wav"/>
-        <FILE id="NXEQay" name="IH_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/IH_C4.wav"/>
-        <FILE id="XB7WAP" name="IY_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/IY_C4.wav"/>
-        <FILE id="ZQt0cc" name="JH_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/JH_C4.wav"/>
-        <FILE id="lozBPP" name="K_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/K_C4.wav"/>
-        <FILE id="KN2Gqg" name="L_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/L_C4.wav"/>
-        <FILE id="L509DG" name="M_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/M_C4.wav"/>
-        <FILE id="mh7YHr" name="N_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/N_C4.wav"/>
-        <FILE id="Pe7dlb" name="NG_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/NG_C4.wav"/>
-        <FILE id="wJ9iwT" name="OW_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/OW_C4.wav"/>
-        <FILE id="juInNC" name="P_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/P_C4.wav"/>
-        <FILE id="QLcuRM" name="R_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/R_C4.wav"/>
-        <FILE id="hD7JUY" name="S_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/S_C4.wav"/>
-        <FILE id="OEjK3Z" name="SH_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/SH_C4.wav"/>
-        <FILE id="Nbf9H5" name="T_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/T_C4.wav"/>
-        <FILE id="xLEDdN" name="TH_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/TH_C4.wav"/>
-        <FILE id="FIR3CT" name="UH_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/UH_C4.wav"/>
-        <FILE id="PGamuC" name="UW_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/UW_C4.wav"/>
-        <FILE id="LtUOcS" name="V_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/V_C4.wav"/>
-        <FILE id="gGPPlf" name="W_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/W_C4.wav"/>
-        <FILE id="o51qfd" name="Y_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/Y_C4.wav"/>
-        <FILE id="hIZJ4Z" name="Z_C4.wav" compile="0" resource="1" file="Resources/VoiceBank/C4/Z_C4.wav"/>
-      </GROUP>
-      <GROUP id="{68E30075-C6AA-61CF-A49B-022E7E2CE30B}" name="F4">
-        <FILE id="UXYOVZ" name="AA_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/AA_F4.wav"/>
-        <FILE id="TE0ILf" name="AE_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/AE_F4.wav"/>
-        <FILE id="hYFpI8" name="AH_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/AH_F4.wav"/>
-        <FILE id="Is9vqd" name="AO_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/AO_F4.wav"/>
-        <FILE id="gtH1j4" name="AW_F4-2.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/AW_F4-2.wav"/>
-        <FILE id="mYmn0L" name="AW_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/AW_F4.wav"/>
-        <FILE id="FQPQ8C" name="AY_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/AY_F4.wav"/>
-        <FILE id="kBfGft" name="B_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/B_F4.wav"/>
-        <FILE id="wfpMg4" name="CH_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/CH_F4.wav"/>
-        <FILE id="lFDi9q" name="D_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/D_F4.wav"/>
-        <FILE id="rg1q9O" name="DH_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/DH_F4.wav"/>
-        <FILE id="qV9RO8" name="EH_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/EH_F4.wav"/>
-        <FILE id="W7lzHx" name="ER_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/ER_F4.wav"/>
-        <FILE id="YUoYhb" name="EY_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/EY_F4.wav"/>
-        <FILE id="A8x3PY" name="F_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/F_F4.wav"/>
-        <FILE id="rbBZv8" name="G_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/G_F4.wav"/>
-        <FILE id="shct7I" name="HH_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/HH_F4.wav"/>
-        <FILE id="ic7oUt" name="IH_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/IH_F4.wav"/>
-        <FILE id="znOYcq" name="IY_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/IY_F4.wav"/>
-        <FILE id="TvsWhB" name="JH_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/JH_F4.wav"/>
-        <FILE id="lpjsOj" name="K_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/K_F4.wav"/>
-        <FILE id="ghVb26" name="L_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/L_F4.wav"/>
-        <FILE id="FOQLVm" name="M_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/M_F4.wav"/>
-        <FILE id="qKsKRA" name="N_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/N_F4.wav"/>
-        <FILE id="yglK9z" name="NG_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/NG_F4.wav"/>
-        <FILE id="Ol5ASd" name="OW_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/OW_F4.wav"/>
-        <FILE id="GwHtax" name="P_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/P_F4.wav"/>
-        <FILE id="WTdPsG" name="R_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/R_F4.wav"/>
-        <FILE id="VRqVhQ" name="S_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/S_F4.wav"/>
-        <FILE id="nJSaag" name="SH_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/SH_F4.wav"/>
-        <FILE id="sUf1W2" name="T_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/T_F4.wav"/>
-        <FILE id="bJ5lkH" name="TH_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/TH_F4.wav"/>
-        <FILE id="eKsV2A" name="UH_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/UH_F4.wav"/>
-        <FILE id="tMlqWY" name="UW_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/UW_F4.wav"/>
-        <FILE id="fBnwBE" name="V_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/V_F4.wav"/>
-        <FILE id="mtIqG5" name="W_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/W_F4.wav"/>
-        <FILE id="ZOFuAt" name="Y_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/Y_F4.wav"/>
-        <FILE id="mWkx8D" name="Z_F4.wav" compile="0" resource="1" file="Resources/VoiceBank/F4/Z_F4.wav"/>
-      </GROUP>
-    </GROUP>
   </MAINGROUP>
   <MODULES>
     <MODULE id="juce_audio_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_audio_devices" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_audio_formats" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_processors" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_processors_headless" showAllCode="1" useLocalCopy="0"
+            useGlobalPath="1"/>
+    <MODULE id="juce_audio_utils" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_core" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_cryptography" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_data_structures" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_events" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_graphics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
   </MODULES>
   <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
   <EXPORTFORMATS>
@@ -234,6 +134,10 @@
         <MODULEPATH id="juce_audio_basics" path="../JUCE/modules"/>
         <MODULEPATH id="juce_audio_devices" path="../JUCE/modules"/>
         <MODULEPATH id="juce_audio_formats" path="../JUCE/modules"/>
+        <MODULEPATH id="juce_audio_utils" path="../JUCE/modules"/>
+        <MODULEPATH id="juce_audio_processors" path="../JUCE/modules"/>
+        <MODULEPATH id="juce_gui_extra" path="../JUCE/modules"/>
+        <MODULEPATH id="juce_audio_processors_headless" path="../JUCE/modules"/>
       </MODULEPATHS>
     </VS2026>
   </EXPORTFORMATS>

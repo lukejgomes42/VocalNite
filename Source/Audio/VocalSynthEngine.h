@@ -1,0 +1,166 @@
+#pragma once
+#include <JuceHeader.h>
+#include <random>
+
+// ---------------------------------------------------------------------------
+//  VocalSynthEngine
+//
+//  Concatenative vocal synthesiser + integrated metronome.
+//
+//  Audio quality features:
+//  • BPM-proportional phoneme timing — speech rate tracks tempo
+//  • Duration weighting — vowels get more time, stops less, fricatives fair
+//  • Equal-power cosine crossfade between phonemes
+//  • Per-phoneme amplitude envelope (attack / sustain / release)
+//  • Vibrato on vowel phonemes for humanisation
+//  • Slight timing jitter (±8%) per phoneme for natural feel
+//  • Last phoneme plays full WAV once (no loop), fades at end
+//  • One-pole smoothing filter to reduce concatenation harshness
+//  • Release envelope when a voice is superseded
+//  • Time-signature-aware metronome on the audio thread
+// ---------------------------------------------------------------------------
+
+class VocalSynthEngine : public juce::AudioSource
+{
+public:
+    VocalSynthEngine();
+    ~VocalSynthEngine() override = default;
+
+    // ── Resource loading ────────────────────────────────────────────────────
+    bool loadDictionary(const juce::File& cmuDictFile);
+    bool loadVoiceBank(const juce::File& voiceBankFolder);
+
+    // ── Playback control ────────────────────────────────────────────────────
+    void queueLyric(const juce::String& lyric, int gridPitch, double bpm = 120.0);
+    void stop();
+
+    // ── Metronome control (call from message thread) ────────────────────────
+    void setMetronomeEnabled(bool enabled);
+    void setTempo(double bpm);
+    void setTimeSignature(int numerator, int denominator);
+
+    // ── AudioSource interface ────────────────────────────────────────────────
+    void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override;
+    void releaseResources() override;
+    void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override;
+
+    // Read-only accessors for UI (beat flash etc.)
+    bool didMetronomeTick() const { return metronomeTickFlag.load(); }
+    void clearMetronomeTick() { metronomeTickFlag.store(false); }
+    int  getLastMetronomeBeat() const { return metroLastBeat.load(); }
+
+private:
+    // ── Dictionary ──────────────────────────────────────────────────────────
+    std::unordered_map<std::string, std::vector<std::string>> dictionary;
+    std::vector<std::string> lookupWord(const juce::String& word) const;
+    std::string              stripStress(const std::string& phoneme) const;
+
+    // ── Voice bank ──────────────────────────────────────────────────────────
+    std::unordered_map<std::string, juce::AudioBuffer<float>> voiceBank;
+    static std::string nearestNoteFolder(int midiPitch,
+        const std::vector<std::pair<int, std::string>>& available);
+    static int         gridPitchToMidi(int gridPitch);
+    static int         noteNameToMidi(const std::string& name);
+
+    // Discovered pitch folders (populated by loadVoiceBank)
+    std::vector<std::pair<int, std::string>> availableNoteFolders;  // midi, name
+
+    // ── Phoneme classification ──────────────────────────────────────────────
+    enum class PhonemeType { Vowel, SustainedConsonant, StopConsonant };
+    static PhonemeType classifyPhoneme(const std::string& phoneme);
+    static float       phonemeDurationWeight(PhonemeType type);
+    static int         phonemeMinSamples(PhonemeType type, double sampleRate);
+
+    // ── Voice struct ────────────────────────────────────────────────────────
+    struct PhonemeSlot
+    {
+        const juce::AudioBuffer<float>* buffer = nullptr;
+        int   readPos = 0;
+        int   slotLength = 0;
+        int   samplesPlayed = 0;
+        bool  isLast = false;
+        PhonemeType type = PhonemeType::Vowel;
+
+        // Per-phoneme amplitude envelope (in samples)
+        int   attackLen = 0;
+        int   releaseStart = 0;    // = slotLength - releaseLen
+        int   releaseLen = 0;
+    };
+
+    struct Voice
+    {
+        std::vector<PhonemeSlot> phonemes;
+        int   currentPhoneme = 0;
+        bool  active = false;
+        bool  releasing = false;
+        int   releasePos = 0;
+        int   releaseLen = 0;
+
+        // Crossfade state
+        const juce::AudioBuffer<float>* prevBuffer = nullptr;
+        int   prevReadPos = 0;
+        int   crossfadePos = 0;
+        int   crossfadeLen = 0;
+
+        // Vibrato state (per-voice, applied to vowels)
+        float vibratoPhase = 0.0f;
+        float vibratoRate = 0.0f;   // Hz, randomised per voice
+        float vibratoDepth = 0.0f;   // semitones, randomised per voice
+        float vibratoAccum = 0.0f;   // fractional sample accumulator
+
+        // One-pole smoothing filter state
+        float filterState = 0.0f;
+        float filterCoeff = 0.0f;   // 0..1, set from sample rate
+    };
+
+    // ── Thread-safe voice queue ──────────────────────────────────────────────
+    juce::CriticalSection          queueLock;
+    std::vector<Voice>             pendingVoices;
+    std::vector<Voice>             activeVoices;
+
+    // ── Audio state ─────────────────────────────────────────────────────────
+    double currentSampleRate = 44100.0;
+    bool   shouldStop = false;
+
+    static constexpr int kCrossfadeSamples = 1024;
+    static constexpr int kReleaseSamples = 2048;
+
+    // ── Humanisation RNG ────────────────────────────────────────────────────
+    std::mt19937 rng{ std::random_device{}() };
+
+    // ── Metronome (audio thread) ────────────────────────────────────────────
+    std::atomic<bool>   metronomeEnabled{ false };
+    std::atomic<double> metroBPM{ 120.0 };
+    std::atomic<int>    metroTimeSigNum{ 4 };
+    std::atomic<int>    metroTimeSigDen{ 4 };
+
+    double metroSampleCounter = 0.0;
+    int    metroBeatInMeasure = 0;
+
+    std::atomic<bool> metronomeTickFlag{ false };
+    std::atomic<int>  metroLastBeat{ 0 };
+
+    juce::AudioBuffer<float> clickHi;
+    juce::AudioBuffer<float> clickLo;
+    int  clickPlayPos = -1;
+    bool clickIsAccent = false;
+
+    void generateClickBuffers();
+    void renderMetronome(float* outL, float* outR, int numSamples);
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+    Voice buildVoice(const std::vector<std::string>& phonemes,
+        const std::string& noteFolder,
+        double secondsPerBeat);
+
+    // Lookup a buffer by key (e.g. "AH" or "AY-ER") trying noteFolder then all pitches
+    const juce::AudioBuffer<float>* findBuffer(const std::string& key,
+        const std::string& noteFolder) const;
+
+    bool renderVoice(Voice& v, float* outL, float* outR, int numSamples);
+
+    // Read sample: loop=true wraps with crossfade, loop=false fades to zero at end
+    static float readSample(const juce::AudioBuffer<float>* buf, int& readPos, bool loop);
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VocalSynthEngine)
+};

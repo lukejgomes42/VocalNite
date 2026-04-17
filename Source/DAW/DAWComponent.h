@@ -1,6 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "PianoRollComponent.h"
+#include "../Audio/VocalSynthEngine.h"
 
 class DAWComponent : public juce::Component,
     public juce::MenuBarModel,
@@ -26,10 +27,10 @@ public:
     void mouseDoubleClick(const juce::MouseEvent& e) override;
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
 
-    //Playhead
+    // Playhead
     void timerCallback() override;
 
-    //Pattern Drag and Drop
+    // Pattern Drag and Drop
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e) override;
 
@@ -69,7 +70,7 @@ private:
     double patternScrollOffset = 0.0;
     juce::ScrollBar horizontalScrollBar{ false };
     double horizontalScrollOffset = 0.0;
-    double playheadPosition = 0.0; // in beats
+    double playheadPosition = 0.0;
     bool isPlaying = false;
     int currentBPM = 120;
     juce::String currentTimeSig = "4/4";
@@ -92,7 +93,7 @@ private:
 
     juce::Array<int> patternIds;
 
-    // Pattern note previews
+    // Pattern note previews (pitch + beat only, for clip rendering)
     struct NotePreview
     {
         int pitch;
@@ -108,7 +109,7 @@ private:
         int patternIndex;
         int trackIndex;
         double startBeat;
-        double duration = 4.0; // default 4 beats
+        double duration = 4.0;
     };
     juce::Array<PlacedClip> placedClips;
 
@@ -118,17 +119,14 @@ private:
         enum Type { AddPattern, RemovePattern, AddClip, RemoveClip, MoveClip, AddTrack, RemoveTrack };
         Type type;
 
-        // Pattern data
         juce::String patternName;
         int patternId = -1;
         int patternIndex = -1;
 
-        // Clip data
         PlacedClip clip;
         PlacedClip previousClip;
         int clipIndex = -1;
 
-        // Track data
         juce::String trackName;
         int trackIndex = -1;
     };
@@ -139,17 +137,36 @@ private:
     void performUndo();
     void performRedo();
 
-    // Metronome
+    // Metronome (audio-thread metronome lives inside vocalSynth)
     juce::TextButton metronomeButton;
-    bool metronomeEnabled = false;
-    bool metronomeBeat = false;
-    double beatAccumulator = 0.0;
+    bool metronomeEnabled = false;   // local UI state mirror
+    bool metronomeBeat = false;      // visual flash flag
     juce::AudioDeviceManager audioDeviceManager;
 
-    void playMetronomeClick();
+    void parseTimeSignature(const juce::String& timeSig, int& num, int& den) const;
 
     juce::String currentUsername;
     juce::Label usernameLabel;
+
+    // ── Vocal Synthesis ──
+    VocalSynthEngine vocalSynth;
+    juce::AudioSourcePlayer synthPlayer;
+
+    struct FullNote
+    {
+        int pitch;
+        int beat;
+        juce::String lyric;
+    };
+    juce::Array<juce::Array<FullNote>> patternFullNotes;
+
+    int lastTriggeredBeat = -1;
+
+    void loadFullPatternNotes();
+    void triggerNotesAtBeat(int beat);
+    double getPatternDuration(int patternIndex) const;
+
+    juce::Array<double> patternDurations;
 
     // Helpers
     void addTrack();
