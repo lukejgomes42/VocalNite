@@ -2,6 +2,7 @@
 #include <JuceHeader.h>
 #include "TopBarComponent.h"
 #include "../Projects/Project.h"
+#include "../Educational/EducationalModeManager.h"
 
 class ProjectManagerComponent : public juce::Component,
     public juce::ListBoxModel
@@ -17,7 +18,8 @@ public:
 
     // ListBoxModel
     int getNumRows() override;
-    void paintListBoxItem(int rowNumber, juce::Graphics&, int width, int height, bool rowIsSelected) override;
+    void paintListBoxItem(int rowNumber, juce::Graphics&,
+        int width, int height, bool rowIsSelected) override;
     void listBoxItemDoubleClicked(int row, const juce::MouseEvent&) override;
 
 private:
@@ -29,6 +31,8 @@ private:
     juce::Label statusLabel;
     juce::ListBox recentProjectsList;
     juce::Array<juce::File> recentFiles;
+
+    juce::ToggleButton eduModeToggle{ "Educational Mode" };  // ← CORRECT PLACE
 
     void refreshRecentProjects();
     juce::Rectangle<int> getCentreCardBounds() const;

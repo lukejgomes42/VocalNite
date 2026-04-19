@@ -1,6 +1,8 @@
 #include <JuceHeader.h>
 #include "DAWComponent.h"
 #include "../Database/DatabaseManager.h"
+#include "../Educational/TooltipRegistry.h"
+#include "../Educational/EducationalModeManager.h"
 
 class PatternEditorWindow : public juce::DocumentWindow
 {
@@ -222,10 +224,59 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
     }
     loadPatterns();
     loadPatternNotes();
+
+    // ─── Educational Mode Setup ──────────────────────────────────────
+    addChildComponent(synthInspector);
+    addAndMakeVisible(highlightOverlay);
+    highlightOverlay.setAlwaysOnTop(true);
+
+    inspectorToggleButton.setButtonText("Inspector");
+    inspectorToggleButton.setColour(juce::TextButton::buttonColourId,
+        juce::Colour(0, 80, 100));
+    inspectorToggleButton.setColour(juce::TextButton::textColourOnId,
+        juce::Colours::white);
+    inspectorToggleButton.setVisible(false); // hidden until edu mode is on
+    inspectorToggleButton.onClick = [this]()
+        {
+            if (inspectorWindow == nullptr)
+            {
+                // Create and show the pop-up window
+                inspectorWindow = new SynthesisInspectorWindow(&synthInspector);
+                inspectorWindow->onClose = [this]()
+                    {
+                        inspectorWindow = nullptr;
+                        inspectorToggleButton.setColour(
+                            juce::TextButton::buttonColourId,
+                            juce::Colour(0, 80, 100));
+                        resized();
+                        repaint();
+                    };
+                inspectorToggleButton.setColour(
+                    juce::TextButton::buttonColourId,
+                    juce::Colour(0, 140, 160));
+            }
+            else
+            {
+                // Close the pop-up window
+                inspectorWindow->closeButtonPressed();
+            }
+        };
+    addAndMakeVisible(inspectorToggleButton);
+
+    // Register as listener so we react when the toggle changes
+    EducationalModeManager::getInstance().addListener(this);
+
+    // Apply initial tooltip state
+    updateTooltips(EducationalModeManager::getInstance().isEnabled());
+    // ────────────────────────────────────────────────────────────────
+
     setSize(1280, 720);
 }
 
-DAWComponent::~DAWComponent() {}
+DAWComponent::~DAWComponent() {
+    
+    EducationalModeManager::getInstance().removeListener(this);
+}
 
 void DAWComponent::paint(juce::Graphics& g)
 {
@@ -503,6 +554,11 @@ void DAWComponent::resized()
     // Pattern browser buttons
     addPatternButton.setBounds(4, getHeight() - 60, 140, 24);
 
+    if (EducationalModeManager::getInstance().isEnabled())
+    {
+        inspectorToggleButton.setBounds(4, getHeight() - 90, 140, 24);
+    }
+
     // Pattern scrollbar
     int patternWidth = 150;
     int patternAreaHeight = getHeight() - gridTop - 60;
@@ -518,6 +574,8 @@ void DAWComponent::resized()
     int totalGridWidth = 128 * 80; // 128 beats * cellWidth
     horizontalScrollBar.setRangeLimits(0.0, totalGridWidth);
     horizontalScrollBar.setCurrentRange(horizontalScrollOffset, getWidth() - gridLeft);
+
+    highlightOverlay.setBounds(getLocalBounds());
 }
 
 juce::StringArray DAWComponent::getMenuBarNames()
@@ -904,6 +962,43 @@ void DAWComponent::openPatternEditor(int index)
     window->centreWithSize(1280, 720);
     window->setVisible(true);
 
+    if (EducationalModeManager::getInstance().isEnabled())
+    {
+        // Look up the pitch of notes in this pattern
+        juce::String pitchName = "N/A";
+
+        if (patternId >= 0)
+        {
+            try
+            {
+                SQLite::Statement query(DatabaseManager::get().db(),
+                    "SELECT pitch FROM PatternNotes WHERE pattern_id = ? LIMIT 1");
+                query.bind(1, patternId);
+                if (query.executeStep())
+                {
+                    int midiPitch = query.getColumn(0).getInt();
+                    juce::StringArray noteNames = {
+                        "C", "C#", "D", "D#", "E", "F",
+                        "F#", "G", "G#", "A", "A#", "B"
+                    };
+                    int octave = (midiPitch / 12) - 1;
+                    juce::String noteName = noteNames[midiPitch % 12];
+                    pitchName = noteName + juce::String(octave);
+                }
+            }
+            catch (...) {}
+        }
+
+        highlightOverlay.highlight(&addPatternButton,
+            juce::Colours::mediumpurple);
+
+        synthInspector.onPhonemeResolved(
+            patternNames[index],
+            { "opening", "piano", "roll" },
+            pitchName
+        );
+    }
+
     // Reload note previews when the editor is closed
     roll->onEditorClosed = [this]()
         {
@@ -911,6 +1006,7 @@ void DAWComponent::openPatternEditor(int index)
             repaint();
         };
 }
+
 
 void DAWComponent::drawPatternBrowser(juce::Graphics& g, int gridTop, int patternWidth)
 {
@@ -1000,6 +1096,20 @@ void DAWComponent::timerCallback()
     {
         double beatsPerFrame = (currentBPM / 60.0) / 60.0;
         playheadPosition += beatsPerFrame;
+
+        if (EducationalModeManager::getInstance().isEnabled())
+        {
+            for (auto& clip : placedClips)
+            {
+                if (playheadPosition >= clip.startBeat &&
+                    playheadPosition < clip.startBeat + clip.duration)
+                {
+                    highlightOverlay.highlight(&playButton,
+                        juce::Colours::cyan);
+                    break;
+                }
+            }
+        }
 
         // Metronome
         if (metronomeEnabled)
@@ -1432,4 +1542,60 @@ void DAWComponent::loadPatternNotes()
 
         patternNotePreviews.add(notes);
     }
+}
+
+void DAWComponent::updateTooltips(bool eduEnabled)
+{
+    playButton.setTooltip(eduEnabled
+        ? TooltipRegistry::get("playButton") : "");
+    pauseButton.setTooltip(eduEnabled
+        ? TooltipRegistry::get("pauseButton") : "");
+    stopButton.setTooltip(eduEnabled
+        ? TooltipRegistry::get("stopButton") : "");
+
+    addPatternButton.setTooltip(eduEnabled
+        ? TooltipRegistry::get("addPattern") : "");
+    addTrackButton.setTooltip(eduEnabled
+        ? TooltipRegistry::get("addTrack") : "");
+
+    tempoButton.setTooltip(eduEnabled
+        ? TooltipRegistry::get("bpmControl") : "");
+    timeSigButton.setTooltip(eduEnabled
+        ? TooltipRegistry::get("timeSignature") : "");
+
+    metronomeButton.setTooltip(eduEnabled
+        ? TooltipRegistry::get("snapToggle") : "");
+
+    selectModeButton.setTooltip(eduEnabled
+        ? "SELECT MODE: Click patterns/clips to select them "
+        "without accidentally editing." : "");
+    editModeButton.setTooltip(eduEnabled
+        ? "EDIT MODE: Double-click a pattern to open the "
+        "Piano Roll and write notes + lyrics." : "");
+}
+
+void DAWComponent::educationalModeChanged(bool isEnabled)
+{
+    if (!isShowing()) return;
+
+    inspectorToggleButton.setVisible(isEnabled);
+
+    if (!isEnabled)
+    {
+        // Close the popup window if open
+        if (inspectorWindow != nullptr)
+        {
+            inspectorWindow->closeButtonPressed();
+            inspectorWindow = nullptr;
+        }
+
+        synthInspector.setVisible(false);
+        inspectorToggleButton.setColour(
+            juce::TextButton::buttonColourId,
+            juce::Colour(0, 80, 100));
+    }
+
+    updateTooltips(isEnabled);
+    resized();
+    repaint();
 }

@@ -40,6 +40,20 @@
       </GROUP>
     </GROUP>
     <GROUP id="{69EC30F4-DBF3-583D-B33A-8D575564E6E7}" name="Source">
+      <GROUP id="{2FF5D562-99D4-0202-C2B2-1EDC24A45FB8}" name="Educational">
+        <FILE id="i6wXMO" name="EducationalModeManager.h" compile="0" resource="0"
+              file="Source/Educational/EducationalModeManager.h"/>
+        <FILE id="bI82ZX" name="HighlightOverlay.h" compile="0" resource="0"
+              file="Source/Educational/HighlightOverlay.h"/>
+        <FILE id="nLJPtN" name="SynthesisInspector.cpp" compile="1" resource="0"
+              file="Source/Educational/SynthesisInspector.cpp"/>
+        <FILE id="ImlcMu" name="SynthesisInspector.h" compile="0" resource="0"
+              file="Source/Educational/SynthesisInspector.h"/>
+        <FILE id="WazzPP" name="TooltipRegistry.cpp" compile="1" resource="0"
+              file="Source/Educational/TooltipRegistry.cpp"/>
+        <FILE id="X5mgPI" name="TooltipRegistry.h" compile="0" resource="0"
+              file="Source/Educational/TooltipRegistry.h"/>
+      </GROUP>
       <GROUP id="{54E36A8B-7473-4D98-4483-5978EF8BEF55}" name="DAW">
         <FILE id="j40C6N" name="DAWComponent.cpp" compile="1" resource="0"
               file="Source/DAW/DAWComponent.cpp"/>

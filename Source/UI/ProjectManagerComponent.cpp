@@ -103,6 +103,25 @@ ProjectManagerComponent::ProjectManagerComponent()
     statusLabel.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(statusLabel);
 
+    eduModeToggle.setToggleState(
+        EducationalModeManager::getInstance().isEnabled(),
+        juce::dontSendNotification);
+
+    eduModeToggle.setColour(juce::ToggleButton::textColourId,
+        juce::Colour(180, 140, 210));
+
+    eduModeToggle.onClick = [this]()
+        {
+            bool newState = eduModeToggle.getToggleState();
+            EducationalModeManager::getInstance().setEnabled(newState);
+
+            eduModeToggle.setColour(juce::ToggleButton::textColourId,
+                newState ? juce::Colours::cyan
+                : juce::Colour(180, 140, 210));
+        };
+
+    addAndMakeVisible(eduModeToggle);
+
     // Recent projects list
     recentProjectsList.setColour(juce::ListBox::backgroundColourId, juce::Colour(20, 10, 35));
     recentProjectsList.setColour(juce::ListBox::outlineColourId, juce::Colour(60, 40, 90));
@@ -319,6 +338,12 @@ void ProjectManagerComponent::resized()
     openButton.setBounds(card.getX() + 16 + btnW + 16, btnY, btnW, btnH);
 
     statusLabel.setBounds(card.getX(), card.getBottom() + 6, card.getWidth(), 18);
+
+    eduModeToggle.setBounds(
+        card.getX() + 16,
+        card.getBottom() + 10,
+        200, 24
+    );
 }
 
 juce::Rectangle<int> ProjectManagerComponent::getCentreCardBounds() const

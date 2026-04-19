@@ -1,12 +1,54 @@
 #pragma once
 #include <JuceHeader.h>
 #include "PianoRollComponent.h"
+#include "../Educational/EducationalModeManager.h"
+#include "../Educational/SynthesisInspector.h"
+#include "../Educational/HighlightOverlay.h"
+#include "../Educational/TooltipRegistry.h"
+
+class SynthesisInspectorWindow : public juce::DocumentWindow
+{
+public:
+    SynthesisInspectorWindow(SynthesisInspector* inspector)
+        : DocumentWindow("Synthesis Inspector",
+            juce::Colour(15, 15, 25),
+            DocumentWindow::closeButton)
+    {
+        setUsingNativeTitleBar(false);
+        setResizable(true, false);
+        setContentNonOwned(inspector, true);  // works now — full type is known
+        centreWithSize(500, 300);
+        setVisible(true);
+    }
+
+    void closeButtonPressed() override
+    {
+        if (onClose) onClose();
+        setVisible(false);
+    }
+
+    std::function<void()> onClose;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SynthesisInspectorWindow)
+};
 
 class DAWComponent : public juce::Component,
     public juce::MenuBarModel,
     public juce::ScrollBar::Listener,
-    public juce::Timer
+    public juce::Timer,
+    public EducationalModeManager::Listener
 {
+
+private:
+    // Educational Mode
+    SynthesisInspector          synthInspector;
+    HighlightOverlay            highlightOverlay;
+    juce::TooltipWindow         tooltipWindow{ this, 600 };
+    juce::TextButton            inspectorToggleButton;
+    SynthesisInspectorWindow* inspectorWindow = nullptr;
+
+    void updateTooltips(bool eduEnabled);
+
 public:
     DAWComponent(const juce::String& projectName, int projectId, const juce::String& username = "");
     ~DAWComponent() override;
@@ -35,7 +77,9 @@ public:
 
     std::function<void()> onReturnToDashboard;
 
-    void setUsername(const juce::String& name) { currentUsername = name; usernameLabel.setText(name, juce::dontSendNotification); }
+    void setUsername(const juce::String& name) { currentUsername = name; usernameLabel.setText(name, juce::dontSendNotification); }\
+
+    void educationalModeChanged(bool isEnabled) override;
 
 private:
     // Menu bar
