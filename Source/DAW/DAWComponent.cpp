@@ -1,7 +1,11 @@
 #include <JuceHeader.h>
 #include "DAWComponent.h"
 #include "../Database/DatabaseManager.h"
+#include "../Audio/VocalSynthEngine.h"
+#include "../Educational/EducationalModeManager.h"
+#include "../Educational/TooltipRegistry.h"
 #include <libpq-fe.h>
+#include <unordered_set>
 
 class PatternEditorWindow : public juce::DocumentWindow
 {
@@ -61,14 +65,40 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
 
     playButton.onClick = [this]()
         {
+            // Toggle: pressing Play while already playing pauses instead of doing nothing.
+            if (isPlaying)
+            {
+                // Pause path — same logic as the Pause button
+                isPlaying = false;
+                stopTimer();
+                vocalSynth.setPaused(true);          // freeze audio output
+                vocalSynth.setMetronomeEnabled(false);
+                if (EducationalModeManager::getInstance().isEnabled())
+                    highlightOverlay.highlight(&playButton, juce::Colours::cyan);
+                return;
+            }
+
+            // Resume/start path
             isPlaying = true;
+            vocalSynth.setPaused(false);             // un-freeze; voices continue from where they left off
             startTimer(1000 / 60); // 60 FPS
+            if (metronomeEnabled)
+            {
+                vocalSynth.resetMetronome(playheadPosition);
+                vocalSynth.setMetronomeEnabled(true);
+            }
+            if (EducationalModeManager::getInstance().isEnabled())
+                highlightOverlay.highlight(&playButton, juce::Colours::cyan);
         };
 
     pauseButton.onClick = [this]()
         {
             isPlaying = false;
             stopTimer();
+            vocalSynth.setPaused(true);              // freeze audio output
+            vocalSynth.setMetronomeEnabled(false);
+            if (EducationalModeManager::getInstance().isEnabled())
+                highlightOverlay.highlight(&pauseButton, juce::Colours::cyan);
         };
 
     stopButton.onClick = [this]()
@@ -76,6 +106,12 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
             isPlaying = false;
             stopTimer();
             playheadPosition = 0.0;
+            lastTriggeredBeat = -1;
+            vocalSynth.setPaused(false);             // unpause so stop() can clear voices
+            vocalSynth.stop();
+            vocalSynth.setMetronomeEnabled(false);
+            if (EducationalModeManager::getInstance().isEnabled())
+                highlightOverlay.highlight(&stopButton, juce::Colours::cyan);
             repaint();
         };
 
@@ -97,13 +133,75 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
     metronomeButton.onClick = [this]()
         {
             metronomeEnabled = !metronomeEnabled;
+
+            // Only engage the audio-thread metronome if we're actually playing
+            if (isPlaying)
+            {
+                if (metronomeEnabled)
+                {
+                    vocalSynth.resetMetronome(playheadPosition);
+                    vocalSynth.setMetronomeEnabled(true);
+                }
+                else
+                {
+                    vocalSynth.setMetronomeEnabled(false);
+                }
+            }
+
             metronomeButton.setColour(juce::TextButton::buttonColourId,
                 metronomeEnabled ? juce::Colour(0, 120, 80) : juce::Colour(40, 40, 60));
+
+            if (EducationalModeManager::getInstance().isEnabled())
+                highlightOverlay.highlight(&metronomeButton, juce::Colours::cyan);
         };
     addAndMakeVisible(metronomeButton);
 
     // Initialize audio device
     audioDeviceManager.initialiseWithDefaultDevices(0, 2);
+
+    // ── Find Resources folder (instant — just directory checks) ─────────────
+    juce::File resourcesDir;
+    juce::File searchDir = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory();
+
+    for (int i = 0; i < 10; ++i)
+    {
+        juce::File candidate = searchDir.getChildFile("Resources");
+        if (candidate.isDirectory() && candidate.getChildFile("cmudict.txt").existsAsFile())
+        {
+            resourcesDir = candidate;
+            break;
+        }
+        searchDir = searchDir.getParentDirectory();
+    }
+
+    DBG("Resources dir found: " + resourcesDir.getFullPathName());
+    DBG("Dict file exists: " + juce::String(resourcesDir.getChildFile("cmudict.txt").existsAsFile() ? "YES" : "NO"));
+    DBG("VoiceBank exists: " + juce::String(resourcesDir.getChildFile("VoiceBank").isDirectory() ? "YES" : "NO"));
+
+    // Hook up the audio callback immediately. If the user hits play before the
+    // voice bank is loaded, queueLyric will just be a no-op (findBuffer returns
+    // nullptr, buildVoice returns empty). Safe.
+    synthPlayer.setSource(&vocalSynth);
+    audioDeviceManager.addAudioCallback(&synthPlayer);
+
+    // Sync initial tempo and time signature to the engine
+    vocalSynth.setTempo((double)currentBPM);
+    vocalSynth.setTimeSignature(4, 4);
+
+    // ── Kick off background resource loading ────────────────────────────────
+    // Dictionary (~100ms) + VoiceBank (~3400 WAV files, several seconds) — all
+    // on a worker thread. UI stays responsive; transport buttons stay disabled
+    // until the voice bank is ready.
+    if (resourcesDir != juce::File())
+    {
+        resourceLoader.reset(new ResourceLoader(*this, resourcesDir));
+        resourceLoader->startThread();
+    }
+    else
+    {
+        DBG("ERROR: Could not locate Resources folder!");
+        loadingOverlay.setStatus("Error: Resources folder not found");
+    }
 
     addChildComponent(pianoRoll);
 
@@ -181,6 +279,7 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
                         if (newBPM > 0 && newBPM <= 522)
                         {
                             currentBPM = newBPM;
+                            vocalSynth.setTempo((double)currentBPM);
                             tempoButton.setButtonText("BPM: " + juce::String(currentBPM));
                         }
                     }
@@ -207,6 +306,9 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
                     {
                         currentTimeSig = timeSigs[result - 1];
                         timeSigButton.setButtonText(currentTimeSig);
+                        int num = 4, den = 4;
+                        parseTimeSignature(currentTimeSig, num, den);
+                        vocalSynth.setTimeSignature(num, den);
                     }
                 });
         };
@@ -217,9 +319,12 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
         btn->setColour(juce::TextButton::textColourOnId, juce::Colours::white);
         addAndMakeVisible(btn);
     }
+
     loadPatterns();
     loadPatternNotes();
+    loadFullPatternNotes();
     loadClips();
+    updateClipDurations();   // sync freshly-loaded clips with current pattern sizes
     loadTracks();
     if (trackNames.isEmpty())
     {
@@ -230,10 +335,66 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
             saveTrack(trackName, i - 1);
         }
     }
+
+    // ── Educational Mode setup ──────────────────────────────────────────────
+    addChildComponent(synthInspector);         // owned here, but shown in inspectorWindow when open
+    addAndMakeVisible(highlightOverlay);
+    highlightOverlay.setAlwaysOnTop(true);
+    highlightOverlay.setInterceptsMouseClicks(false, false);
+
+    synthInspector.setSynthEngine(&vocalSynth);
+
+    inspectorToggleButton.setButtonText("Inspector");
+    inspectorToggleButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0, 80, 120));
+    inspectorToggleButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    inspectorToggleButton.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    inspectorToggleButton.onClick = [this]()
+        {
+            if (inspectorWindow != nullptr)
+                closeInspectorWindow();
+            else
+                showInspectorPatternPicker();
+        };
+    addAndMakeVisible(inspectorToggleButton);
+
+    EducationalModeManager::getInstance().addListener(this);
+    // Apply current ed-mode state (in case it was enabled before this component was built)
+    educationalModeChanged(EducationalModeManager::getInstance().isEnabled());
+
+    // Loading overlay — sits on top of everything until vocal resources are ready
+    addAndMakeVisible(loadingOverlay);
+    loadingOverlay.setAlwaysOnTop(true);
+    loadingOverlay.setStatus("Loading voice bank...");
+    refreshTransportEnabled();   // disables transport until voice bank is ready
+
     setSize(1280, 720);
 }
 
-DAWComponent::~DAWComponent() {}
+DAWComponent::~DAWComponent()
+{
+    // Signal any in-flight async callbacks that the component is going away.
+    // They check this before touching any member state.
+    isDying.store(true);
+
+    // Stop the resource loader first — if it's still running, it needs to
+    // finish before we start tearing down other members it might touch.
+    if (resourceLoader != nullptr)
+    {
+        resourceLoader->stopThread(5000);  // wait up to 5s
+        resourceLoader.reset();
+    }
+
+    EducationalModeManager::getInstance().removeListener(this);
+
+    if (inspectorWindow != nullptr)
+    {
+        delete inspectorWindow;
+        inspectorWindow = nullptr;
+    }
+
+    audioDeviceManager.removeAudioCallback(&synthPlayer);
+    synthPlayer.setSource(nullptr);
+}
 
 void DAWComponent::paint(juce::Graphics& g)
 {
@@ -529,6 +690,29 @@ void DAWComponent::resized()
     int totalGridWidth = 128 * cellWidth;
     horizontalScrollBar.setRangeLimits(0.0, totalGridWidth);
     horizontalScrollBar.setCurrentRange(horizontalScrollOffset, getWidth() - gridLeft);
+
+    // ── Educational: inspector toggle + highlight overlay ───────────────────
+    // Inspector toggle sits in the pattern browser footer, above "+ Add Pattern"
+    // when educational mode is on.
+    if (EducationalModeManager::getInstance().isEnabled())
+    {
+        inspectorToggleButton.setBounds(4, getHeight() - 90, 140, 24);
+        // Push + Add Pattern up so it doesn't overlap
+        addPatternButton.setBounds(4, getHeight() - 60, 140, 24);
+    }
+    else
+    {
+        inspectorToggleButton.setBounds(0, 0, 0, 0);
+    }
+
+    // Overlay always covers the full component (non-interactive)
+    highlightOverlay.setBounds(getLocalBounds());
+    highlightOverlay.toFront(false);
+
+    // Loading overlay covers the full component while visible (intercepts clicks)
+    loadingOverlay.setBounds(getLocalBounds());
+    if (loadingOverlay.isVisible())
+        loadingOverlay.toFront(false);
 }
 
 juce::StringArray DAWComponent::getMenuBarNames()
@@ -604,25 +788,59 @@ void DAWComponent::menuItemSelected(int menuItemID, int)
         repaint();
         break;
 
-    case 10: // Play
-        isPlaying = true;
-        startTimer(1000 / 60);
+    case 10: // Play (toggles: pressing while playing = pause)
+        if (isPlaying)
+        {
+            isPlaying = false;
+            stopTimer();
+            vocalSynth.setPaused(true);
+            vocalSynth.setMetronomeEnabled(false);
+        }
+        else
+        {
+            isPlaying = true;
+            vocalSynth.setPaused(false);
+            startTimer(1000 / 60);
+            if (metronomeEnabled)
+            {
+                vocalSynth.resetMetronome(playheadPosition);
+                vocalSynth.setMetronomeEnabled(true);
+            }
+        }
         break;
 
     case 11: // Pause
         isPlaying = false;
         stopTimer();
+        vocalSynth.setPaused(true);
+        vocalSynth.setMetronomeEnabled(false);
         break;
 
     case 12: // Stop
         isPlaying = false;
         stopTimer();
         playheadPosition = 0.0;
+        lastTriggeredBeat = -1;
+        vocalSynth.setPaused(false);
+        vocalSynth.stop();
+        vocalSynth.setMetronomeEnabled(false);
         repaint();
         break;
 
     case 13: // Metronome
         metronomeEnabled = !metronomeEnabled;
+        if (isPlaying)
+        {
+            if (metronomeEnabled)
+            {
+                vocalSynth.resetMetronome(playheadPosition);
+                vocalSynth.setMetronomeEnabled(true);
+            }
+            else
+            {
+                vocalSynth.setMetronomeEnabled(false);
+            }
+        }
         metronomeButton.setColour(juce::TextButton::buttonColourId,
             metronomeEnabled ? juce::Colour(0, 120, 80) : juce::Colour(40, 40, 60));
         break;
@@ -775,8 +993,8 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
                                         std::string oldIdStr = std::to_string(patternIds[i]);
                                         const char* noteParams[2] = { newIdStr.c_str(), oldIdStr.c_str() };
                                         PGresult* notesRes = PQexecParams(DatabaseManager::get().db(),
-                                            "INSERT INTO PatternNotes (pattern_id, pitch, beat, lyric) "
-                                            "SELECT $1::integer, pitch, beat, lyric FROM PatternNotes WHERE pattern_id = $2",
+                                            "INSERT INTO PatternNotes (pattern_id, pitch, beat, lyric, duration) "
+                                            "SELECT $1::integer, pitch, beat, lyric, duration FROM PatternNotes WHERE pattern_id = $2",
                                             2, nullptr, noteParams, nullptr, nullptr, 0);
                                         if (PQresultStatus(notesRes) != PGRES_COMMAND_OK)
                                             DBG("Pattern copy notes error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
@@ -792,11 +1010,20 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
 
                             patternNames.add(copyName);
                             patternIds.add(newPatternId);
+                            loadPatternNotes();
+                            loadFullPatternNotes();
                             repaint();
                             resized();
                         }
                         else if (result == 3)
                         {
+                            // Block deleting the pattern currently being inspected
+                            if (isInspecting() && i == inspectedPatternIndex)
+                            {
+                                DBG("Delete blocked: pattern is currently being inspected");
+                                return;
+                            }
+
                             // Delete from database
                             if (i < patternIds.size() && patternIds[i] >= 0)
                             {
@@ -827,36 +1054,15 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
 
                             patternNames.remove(i);
                             patternIds.remove(i);
+                            // If the inspected pattern came after this one, its index shifts down
+                            if (isInspecting() && inspectedPatternIndex > i)
+                                inspectedPatternIndex--;
+                            loadPatternNotes();
+                            loadFullPatternNotes();
                             repaint();
                             resized();
                         }
                     });
-                return;
-            }
-        }
-    }
-    // Check for clip resize
-    if (!e.mods.isRightButtonDown())
-    {
-        int patternWidth = 150;
-        int trackHeaderWidth = 80;
-        int gridLeft = patternWidth + trackHeaderWidth;
-        int cellWidth = (int)(80.0f * cellWidthMultiplier);
-
-        for (int i = 0; i < placedClips.size(); ++i)
-        {
-            auto& clip = placedClips.getReference(i);
-            int trackY = trackAreaTop + clip.trackIndex * trackHeight - (int)trackScrollOffset;
-            int clipX = gridLeft + (int)(clip.startBeat * cellWidth) - (int)horizontalScrollOffset;
-            int clipW = (int)(clip.duration * cellWidth);
-
-            // Check if clicking on the right edge (last 8 pixels)
-            juce::Rectangle<int> resizeZone(clipX + clipW - 8, trackY, 8, trackHeight);
-            if (resizeZone.contains(e.x, e.y))
-            {
-                isResizingClip = true;
-                resizingClipIndex = i;
-                resizeOriginalDuration = clip.duration;
                 return;
             }
         }
@@ -881,13 +1087,6 @@ void DAWComponent::mouseDoubleClick(const juce::MouseEvent& e)
     int toolbar2Height = 35;
     int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
     int patternAreaTop = gridTop + 28;
-    int patternWidth = 150;
-    int trackHeaderWidth = 80;
-    int gridLeft = patternWidth + trackHeaderWidth;
-    int cellWidth = 80;
-    int scrollBarWidth = 12;
-    int gridWidth = getWidth() - gridLeft - scrollBarWidth;
-    int scrolledX = (int)horizontalScrollOffset;
 
     for (int i = 0; i < patternNames.size(); ++i)
     {
@@ -909,22 +1108,22 @@ void DAWComponent::addPattern()
     // Save to database
     if (currentProjectId >= 0)
     {
-            std::string projectIdStr = std::to_string(currentProjectId);
-            const char* params[2] = { projectIdStr.c_str(), newName.toRawUTF8() };
-            PGresult* res = PQexecParams(DatabaseManager::get().db(),
-                "INSERT INTO Patterns (project_id, name) VALUES ($1, $2) RETURNING pattern_id",
-                2, nullptr, params, nullptr, nullptr, 0);
+        std::string projectIdStr = std::to_string(currentProjectId);
+        const char* params[2] = { projectIdStr.c_str(), newName.toRawUTF8() };
+        PGresult* res = PQexecParams(DatabaseManager::get().db(),
+            "INSERT INTO Patterns (project_id, name) VALUES ($1, $2) RETURNING pattern_id",
+            2, nullptr, params, nullptr, nullptr, 0);
 
-            if (PQresultStatus(res) == PGRES_TUPLES_OK)
-            {
-                newPatternId = std::stoi(PQgetvalue(res, 0, 0));
-                DBG("Pattern saved with ID: " + juce::String(newPatternId));
-            }
-            else
-            {
-                DBG("Pattern save error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
-            }
-            PQclear(res);
+        if (PQresultStatus(res) == PGRES_TUPLES_OK)
+        {
+            newPatternId = std::stoi(PQgetvalue(res, 0, 0));
+            DBG("Pattern saved with ID: " + juce::String(newPatternId));
+        }
+        else
+        {
+            DBG("Pattern save error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+        }
+        PQclear(res);
     }
 
     patternNames.add(newName);
@@ -941,12 +1140,22 @@ void DAWComponent::addPattern()
     int totalPatternHeight = patternNames.size() * patternHeight;
     patternScrollBar.setRangeLimits(0.0, totalPatternHeight);
     loadPatternNotes();
+    loadFullPatternNotes();
     repaint();
     resized();
 }
 
 void DAWComponent::openPatternEditor(int index)
 {
+    // Block opening the editor for the pattern currently being inspected —
+    // we don't want the user modifying a pattern while the inspector is showing
+    // its phoneme breakdown.
+    if (isInspecting() && index == inspectedPatternIndex)
+    {
+        DBG("Pattern editor blocked: pattern is currently being inspected");
+        return;
+    }
+
     int patternId = (index < patternIds.size()) ? patternIds[index] : -1;
     auto* window = new PatternEditorWindow("Pattern Editor: " + patternNames[index]);
     auto* roll = new PianoRollComponent(patternId);
@@ -954,10 +1163,11 @@ void DAWComponent::openPatternEditor(int index)
     window->centreWithSize(1280, 720);
     window->setVisible(true);
 
-    // Reload note previews when the editor is closed
+    // Reload note previews and full notes when the editor is closed
     roll->onEditorClosed = [this]()
         {
             loadPatternNotes();
+            loadFullPatternNotes();
             repaint();
         };
 }
@@ -1051,21 +1261,27 @@ void DAWComponent::timerCallback()
         double beatsPerFrame = (currentBPM / 60.0) / 60.0;
         playheadPosition += beatsPerFrame;
 
-        // Metronome
-        if (metronomeEnabled)
+        // Beat-crossing detection for vocal synthesis
+        int currentBeat = (int)playheadPosition;
+        if (currentBeat != lastTriggeredBeat)
         {
-            double prevAccumulator = beatAccumulator;
-            beatAccumulator += beatsPerFrame;
+            lastTriggeredBeat = currentBeat;
+            triggerNotesAtBeat(currentBeat);
+        }
 
-            if ((int)beatAccumulator > (int)prevAccumulator)
-            {
-                metronomeBeat = true;
-                playMetronomeClick();
-            }
-            else
-            {
-                metronomeBeat = false;
-            }
+        // Metronome visual flash (audio is handled by VocalSynthEngine audio thread)
+        if (metronomeEnabled && vocalSynth.didMetronomeTick())
+        {
+            metronomeBeat = true;
+            vocalSynth.clearMetronomeTick();
+
+            // Educational mode: pulse the metronome button on every tick
+            if (EducationalModeManager::getInstance().isEnabled())
+                highlightOverlay.highlight(&metronomeButton, juce::Colours::cyan);
+        }
+        else
+        {
+            metronomeBeat = false;
         }
 
         repaint();
@@ -1074,25 +1290,6 @@ void DAWComponent::timerCallback()
 
 void DAWComponent::mouseDrag(const juce::MouseEvent& e)
 {
-    if (isResizingClip && resizingClipIndex >= 0)
-    {
-        int menuBarHeight = 25;
-        int toolbarHeight = 40;
-        int toolbar2Height = 35;
-        int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
-        int patternWidth = 150;
-        int trackHeaderWidth = 80;
-        int gridLeft = patternWidth + trackHeaderWidth;
-        int cellWidth = (int)(80.0f * cellWidthMultiplier);
-
-        double beat = (double)(e.x - gridLeft + (int)horizontalScrollOffset) / cellWidth;
-        double newDuration = beat - placedClips[resizingClipIndex].startBeat;
-        newDuration = std::max(0.5, newDuration);
-        placedClips.getReference(resizingClipIndex).duration = newDuration;
-        repaint();
-        return;
-    }
-
     if (!isDraggingPattern && !isDraggingClip)
     {
         int menuBarHeight = 25;
@@ -1104,7 +1301,7 @@ void DAWComponent::mouseDrag(const juce::MouseEvent& e)
         int patternWidth = 150;
         int trackHeaderWidth = 80;
         int gridLeft = patternWidth + trackHeaderWidth;
-        int cellWidth = 80;
+        int cellWidth = (int)(80.0f * cellWidthMultiplier);
 
         // Check if drag started on an existing clip
         for (int i = 0; i < placedClips.size(); ++i)
@@ -1150,14 +1347,6 @@ void DAWComponent::mouseDrag(const juce::MouseEvent& e)
 
 void DAWComponent::mouseUp(const juce::MouseEvent& e)
 {
-    if (isResizingClip && resizingClipIndex >= 0)
-    {
-        updateClip(placedClips[resizingClipIndex]);
-        isResizingClip = false;
-        resizingClipIndex = -1;
-        repaint();
-        return;
-    }
     int menuBarHeight = 25;
     int toolbarHeight = 40;
     int toolbar2Height = 35;
@@ -1166,12 +1355,23 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
     int patternWidth = 150;
     int trackHeaderWidth = 80;
     int gridLeft = patternWidth + trackHeaderWidth;
-    int cellWidth = 80;
+    int cellWidth = (int)(80.0f * cellWidthMultiplier);
 
     if (isDraggingClip && draggingClipIndex >= 0)
     {
         if (e.x < patternWidth)
         {
+            // Block deleting a clip whose pattern is currently being inspected
+            if (isInspecting()
+                && placedClips[draggingClipIndex].patternIndex == inspectedPatternIndex)
+            {
+                DBG("Clip delete blocked: pattern is currently being inspected");
+                isDraggingClip = false;
+                draggingClipIndex = -1;
+                repaint();
+                return;
+            }
+
             Action action;
             action.type = Action::RemoveClip;
             action.clip = placedClips[draggingClipIndex];
@@ -1240,6 +1440,11 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
     }
     else if (isDraggingPattern && draggingPatternIndex >= 0)
     {
+        // Auto-sized duration based on the pattern's note content
+        double newClipDuration = (draggingPatternIndex < patternDurations.size())
+            ? patternDurations[draggingPatternIndex]
+            : 4.0;
+
         for (int i = 0; i < trackNames.size(); ++i)
         {
             int y = trackAreaTop + i * trackHeight - (int)trackScrollOffset;
@@ -1267,7 +1472,7 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
                             if (std::abs(beat - (clip.startBeat + clip.duration)) < snapThreshold)
                                 beat = clip.startBeat + clip.duration;
                             else if (std::abs(beat - clip.startBeat) < snapThreshold)
-                                beat = clip.startBeat - 4.0;
+                                beat = clip.startBeat - newClipDuration;
                         }
                     }
                 }
@@ -1276,6 +1481,7 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
                 clip.patternIndex = draggingPatternIndex;
                 clip.trackIndex = i;
                 clip.startBeat = beat;
+                clip.duration = newClipDuration;
                 saveClip(clip);
                 placedClips.add(clip);
 
@@ -1404,6 +1610,7 @@ void DAWComponent::performUndo()
     if (undoStack.size() > 10)
         undoStack.remove(0);
 
+    loadFullPatternNotes();
     repaint();
     resized();
 }
@@ -1446,42 +1653,22 @@ void DAWComponent::performRedo()
     case Action::RemoveTrack:
         trackNames.remove(action.trackIndex);
         break;
-
     }
 
     undoStack.add(action);
+    loadFullPatternNotes();
     repaint();
     resized();
 }
 
-void DAWComponent::playMetronomeClick()
+void DAWComponent::parseTimeSignature(const juce::String& timeSig, int& num, int& den) const
 {
-    // Generate a simple click sound using a sine wave burst
-    juce::AudioSampleBuffer clickBuffer(2, 2048);
-    clickBuffer.clear();
-
-    float* samplesL = clickBuffer.getWritePointer(0);
-    float* samplesR = clickBuffer.getWritePointer(1);
-    for (int i = 0; i < 2048; ++i)
-    {
-        float envelope = std::exp(-i / 200.0f);
-        float sample = envelope * std::sin(2.0f * juce::MathConstants<float>::pi * 1000.0f * i / 44100.0f);
-        samplesL[i] = sample;
-        samplesR[i] = sample;
-    }
-
-    // Play through audio device
-    if (auto* device = audioDeviceManager.getCurrentAudioDevice())
-    {
-        juce::AudioSourceChannelInfo info(&clickBuffer, 0, clickBuffer.getNumSamples());
-        juce::MemoryAudioSource source(clickBuffer, false);
-        source.prepareToPlay(clickBuffer.getNumSamples(), device->getCurrentSampleRate());
-        juce::AudioSourcePlayer player;
-        player.setSource(&source);
-        audioDeviceManager.addAudioCallback(&player);
-        juce::Time::waitForMillisecondCounter(juce::Time::getMillisecondCounter() + 50);
-        audioDeviceManager.removeAudioCallback(&player);
-    }
+    juce::StringArray parts;
+    parts.addTokens(timeSig, "/", "");
+    num = (parts.size() > 0) ? parts[0].getIntValue() : 4;
+    den = (parts.size() > 1) ? parts[1].getIntValue() : 4;
+    if (num < 1) num = 4;
+    if (den < 1) den = 4;
 }
 
 void DAWComponent::loadPatternNotes()
@@ -1495,32 +1682,142 @@ void DAWComponent::loadPatternNotes()
 
         if (patternId >= 0)
         {
-                std::string patternIdStr = std::to_string(patternId);
-                const char* params[1] = { patternIdStr.c_str() };
-                PGresult* res = PQexecParams(DatabaseManager::get().db(),
-                    "SELECT pitch, beat, duration FROM PatternNotes WHERE pattern_id = $1 ORDER BY beat ASC",
-                    1, nullptr, params, nullptr, nullptr, 0);
+            std::string patternIdStr = std::to_string(patternId);
+            const char* params[1] = { patternIdStr.c_str() };
+            PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                "SELECT pitch, beat, duration FROM PatternNotes WHERE pattern_id = $1 ORDER BY beat ASC",
+                1, nullptr, params, nullptr, nullptr, 0);
 
-                if (PQresultStatus(res) == PGRES_TUPLES_OK)
+            if (PQresultStatus(res) == PGRES_TUPLES_OK)
+            {
+                int rows = PQntuples(res);
+                for (int row = 0; row < rows; ++row)
                 {
-                    int rows = PQntuples(res);
-                    for (int row = 0; row < rows; ++row)
-                    {
-                        NotePreview n;
-                        n.pitch = std::stoi(PQgetvalue(res, row, 0));
-                        n.beat = std::stoi(PQgetvalue(res, row, 1));
-                        n.duration = std::stoi(PQgetvalue(res, row, 2));
-                        notes.add(n);
-                    }
+                    NotePreview n;
+                    n.pitch = std::stoi(PQgetvalue(res, row, 0));
+                    n.beat = std::stoi(PQgetvalue(res, row, 1));
+                    n.duration = std::stoi(PQgetvalue(res, row, 2));
+                    notes.add(n);
                 }
-                else
-                {
-                    DBG("Load pattern notes error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
-                }
-                PQclear(res);
+            }
+            else
+            {
+                DBG("Load pattern notes error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+            }
+            PQclear(res);
         }
 
         patternNotePreviews.add(notes);
+    }
+
+    // Rebuild pattern durations from note content (auto-sizing)
+    patternDurations.clear();
+    for (int i = 0; i < patternNotePreviews.size(); ++i)
+        patternDurations.add(getPatternDuration(i));
+
+    // Sync any already-placed clips with the new pattern durations
+    updateClipDurations();
+}
+
+double DAWComponent::getPatternDuration(int patternIndex) const
+{
+    double maxBeat = 0.0;
+
+    if (patternIndex >= 0 && patternIndex < patternNotePreviews.size())
+    {
+        for (const auto& note : patternNotePreviews.getReference(patternIndex))
+        {
+            // A note occupies [beat, beat + duration). Extend pattern to cover it.
+            double noteEnd = (double)(note.beat + std::max(1, note.duration));
+            if (noteEnd > maxBeat) maxBeat = noteEnd;
+        }
+    }
+
+    // Round up to nearest 4-beat measure, minimum 4 beats
+    double duration = std::max(4.0, std::ceil(maxBeat / 4.0) * 4.0);
+    return duration;
+}
+
+void DAWComponent::updateClipDurations()
+{
+    bool anyChanged = false;
+
+    for (auto& clip : placedClips)
+    {
+        if (clip.patternIndex < 0 || clip.patternIndex >= patternDurations.size())
+            continue;
+
+        double target = patternDurations[clip.patternIndex];
+        if (std::abs(clip.duration - target) > 0.01)
+        {
+            clip.duration = target;
+            if (clip.clipId >= 0)
+                updateClip(clip);   // persist the new duration
+            anyChanged = true;
+        }
+    }
+
+    if (anyChanged)
+        repaint();
+}
+
+void DAWComponent::loadFullPatternNotes()
+{
+    patternFullNotes.clear();
+
+    for (int i = 0; i < patternIds.size(); ++i)
+    {
+        juce::Array<FullNote> notes;
+        int patternId = patternIds[i];
+
+        if (patternId >= 0)
+        {
+            std::string patternIdStr = std::to_string(patternId);
+            const char* params[1] = { patternIdStr.c_str() };
+            PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                "SELECT pitch, beat, lyric FROM PatternNotes WHERE pattern_id = $1 ORDER BY beat ASC",
+                1, nullptr, params, nullptr, nullptr, 0);
+
+            if (PQresultStatus(res) == PGRES_TUPLES_OK)
+            {
+                int rows = PQntuples(res);
+                for (int row = 0; row < rows; ++row)
+                {
+                    FullNote n;
+                    n.pitch = std::stoi(PQgetvalue(res, row, 0));
+                    n.beat = std::stoi(PQgetvalue(res, row, 1));
+                    n.lyric = juce::String(PQgetvalue(res, row, 2));
+                    notes.add(n);
+                }
+            }
+            else
+            {
+                DBG("loadFullPatternNotes error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+            }
+            PQclear(res);
+        }
+
+        patternFullNotes.add(notes);
+    }
+}
+
+void DAWComponent::triggerNotesAtBeat(int globalBeat)
+{
+    for (const auto& clip : placedClips)
+    {
+        int localBeat = globalBeat - (int)clip.startBeat;
+
+        if (localBeat < 0 || localBeat >= (int)clip.duration)
+            continue;
+
+        int pIdx = clip.patternIndex;
+        if (pIdx >= patternFullNotes.size()) continue;
+
+        for (const auto& note : patternFullNotes.getReference(pIdx))
+        {
+            if (note.beat == localBeat && note.lyric.isNotEmpty())
+                vocalSynth.queueLyric(note.lyric, note.pitch, (double)currentBPM);
+        }
     }
 }
 
@@ -1729,31 +2026,333 @@ void DAWComponent::loadTracks()
     PQclear(res);
 }
 
-void DAWComponent::mouseMove(const juce::MouseEvent& e)
+// ============================================================================
+//  Educational Mode Implementation
+// ============================================================================
+
+void DAWComponent::educationalModeChanged(bool isEnabled)
 {
-    int menuBarHeight = 25;
-    int toolbarHeight = 40;
-    int toolbar2Height = 35;
-    int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
-    int trackAreaTop = gridTop + 20;
-    int patternWidth = 150;
-    int trackHeaderWidth = 80;
-    int gridLeft = patternWidth + trackHeaderWidth;
-    int cellWidth = (int)(80.0f * cellWidthMultiplier);
+    // Toggle the inspector button visibility
+    inspectorToggleButton.setVisible(isEnabled);
 
-    for (int i = 0; i < placedClips.size(); ++i)
-    {
-        auto& clip = placedClips.getReference(i);
-        int trackY = trackAreaTop + clip.trackIndex * trackHeight - (int)trackScrollOffset;
-        int clipX = gridLeft + (int)(clip.startBeat * cellWidth) - (int)horizontalScrollOffset;
-        int clipW = (int)(clip.duration * cellWidth);
+    // If ed-mode is being turned off, close any open inspector window
+    if (!isEnabled)
+        closeInspectorWindow();
 
-        juce::Rectangle<int> resizeZone(clipX + clipW - 8, trackY, 8, trackHeight);
-        if (resizeZone.contains(e.x, e.y))
+    // Wire/unwire tooltips across all labeled controls
+    updateTooltips(isEnabled);
+
+    resized();
+    repaint();
+}
+
+void DAWComponent::updateTooltips(bool eduEnabled)
+{
+    auto t = [&](const juce::String& key) -> juce::String
         {
-            setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
-            return;
+            return eduEnabled ? TooltipRegistry::get(key) : juce::String{};
+        };
+
+    // Transport
+    playButton.setTooltip(t("playButton"));
+    pauseButton.setTooltip(t("pauseButton"));
+    stopButton.setTooltip(t("stopButton"));
+    metronomeButton.setTooltip(eduEnabled
+        ? juce::String("METRONOME: Plays a steady click on every beat of your "
+            "current time signature. Use it to keep time while recording "
+            "or editing. The first beat of each measure is accented.")
+        : juce::String{});
+
+    // Tempo + time signature
+    tempoButton.setTooltip(t("bpmControl"));
+    timeSigButton.setTooltip(t("timeSignature"));
+
+    // Pattern + track management
+    addPatternButton.setTooltip(t("addPattern"));
+    addTrackButton.setTooltip(t("addTrack"));
+    inspectorToggleButton.setTooltip(eduEnabled
+        ? juce::String(juce::CharPointer_UTF8(
+            "SYNTHESIS INSPECTOR: Opens a window that walks you through how "
+            "the engine turns your lyrics into sung audio \xe2\x80\x94 one word at a time."))
+        : juce::String{});
+
+    // Mode buttons (no specific registry entries; generic fallback)
+    selectModeButton.setTooltip(eduEnabled
+        ? juce::String(juce::CharPointer_UTF8(
+            "SELECT MODE: Click to select patterns and clips without editing them."))
+        : juce::String{});
+    editModeButton.setTooltip(eduEnabled
+        ? juce::String(juce::CharPointer_UTF8(
+            "EDIT MODE: Click to modify clip positions and pattern contents."))
+        : juce::String{});
+}
+
+void DAWComponent::showInspectorPatternPicker()
+{
+    if (patternNames.isEmpty())
+    {
+        DBG("Inspector: no patterns available to inspect");
+        return;
+    }
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader("Inspect which pattern?");
+    for (int i = 0; i < patternNames.size(); ++i)
+        menu.addItem(i + 1, patternNames[i]);
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(inspectorToggleButton),
+        [this](int result)
+        {
+            if (result > 0)
+                openInspectorForPattern(result - 1);
+        });
+}
+
+void DAWComponent::openInspectorForPattern(int patternIndex)
+{
+    if (patternIndex < 0 || patternIndex >= patternNames.size())
+        return;
+
+    // Build unique-words-in-first-played-order from this pattern's notes
+    juce::StringArray words;
+    juce::StringArray pitches;
+    buildInspectorWordList(patternIndex, words, pitches);
+
+    // Push data into the inspector, then open the window
+    synthInspector.setPatternData(patternNames[patternIndex], words, pitches);
+
+    inspectedPatternIndex = patternIndex;
+
+    if (inspectorWindow == nullptr)
+    {
+        inspectorWindow = new SynthesisInspectorWindow(&synthInspector);
+        inspectorWindow->onClose = [this]()
+            {
+                closeInspectorWindow();
+            };
+    }
+    else
+    {
+        // Already open — bring to front + update title
+        inspectorWindow->setName("Synthesis Inspector: " + patternNames[patternIndex]);
+        inspectorWindow->toFront(true);
+    }
+
+    inspectorWindow->setName("Synthesis Inspector: " + patternNames[patternIndex]);
+    inspectorToggleButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0, 140, 200));
+}
+
+void DAWComponent::closeInspectorWindow()
+{
+    if (inspectorWindow != nullptr)
+    {
+        // DocumentWindow with setContentNonOwned is safe to delete;
+        // it will NOT delete the contained SynthesisInspector (we still own it).
+        inspectorWindow->setVisible(false);
+        delete inspectorWindow;
+        inspectorWindow = nullptr;
+    }
+    inspectedPatternIndex = -1;
+    synthInspector.clearPatternData();
+    inspectorToggleButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0, 80, 120));
+}
+
+void DAWComponent::buildInspectorWordList(int patternIndex,
+    juce::StringArray& outWords,
+    juce::StringArray& outPitches) const
+{
+    outWords.clear();
+    outPitches.clear();
+
+    if (patternIndex < 0 || patternIndex >= patternFullNotes.size())
+        return;
+
+    const auto& notes = patternFullNotes.getReference(patternIndex);
+
+    // The notes come from the DB already sorted by beat ASC, so first-seen is
+    // first-played. Multiple notes at the same beat: we take them in whatever
+    // order the DB returned (lenient first-played order, as you put it).
+    std::unordered_set<std::string> seen;
+
+    for (const auto& note : notes)
+    {
+        if (note.lyric.isEmpty())
+            continue;
+
+        // Normalise for dedupe: lowercase, stripped. The display keeps original.
+        juce::String lyric = note.lyric.trim();
+        if (lyric.isEmpty())
+            continue;
+
+        // A lyric cell can contain multiple words (the engine splits on spaces).
+        // For the word wheel we treat each space-separated word as its own entry.
+        juce::StringArray tokens;
+        tokens.addTokens(lyric, " ", "");
+
+        for (const auto& token : tokens)
+        {
+            juce::String t = token.trim();
+            if (t.isEmpty()) continue;
+
+            std::string key = t.toLowerCase().toStdString();
+            if (seen.insert(key).second)   // true = newly inserted
+            {
+                outWords.add(t);
+                outPitches.add(gridPitchToNoteName(note.pitch));
+            }
         }
     }
-    setMouseCursor(juce::MouseCursor::NormalCursor);
+}
+
+juce::String DAWComponent::gridPitchToNoteName(int gridPitch)
+{
+    // Grid pitch 0 = top row = highest note. The engine uses
+    // midi = (95 - gridPitch) + 12  → grid 0 maps to MIDI 107 (B7),
+    //                                 grid 35 maps to MIDI 72 (C5), etc.
+    int midi = (95 - gridPitch) + 12;
+    if (midi < 0) midi = 0;
+    if (midi > 127) midi = 127;
+
+    static const char* names[] = { "C", "C#", "D", "D#", "E", "F",
+                                   "F#", "G", "G#", "A", "A#", "B" };
+    int note = midi % 12;
+    int octave = (midi / 12) - 1;   // MIDI 60 = C4
+    return juce::String(names[note]) + juce::String(octave);
+}
+
+// ============================================================================
+//  Async resource loading
+// ============================================================================
+
+void DAWComponent::ResourceLoader::run()
+{
+    // Stage 1: dictionary (fast, ~100ms, 126k entries).
+    if (!threadShouldExit())
+    {
+        auto dictFile = resourcesDir.getChildFile("cmudict.txt");
+        owner.vocalSynth.loadDictionary(dictFile);
+
+        juce::MessageManager::callAsync([ownerPtr = &owner]()
+            {
+                ownerPtr->onDictionaryLoaded();
+            });
+    }
+
+    // Stage 2: voice bank (slow — ~3400 WAV files, several seconds).
+    if (!threadShouldExit())
+    {
+        auto bankDir = resourcesDir.getChildFile("VoiceBank");
+        owner.vocalSynth.loadVoiceBank(bankDir);
+
+        juce::MessageManager::callAsync([ownerPtr = &owner]()
+            {
+                ownerPtr->onVoiceBankLoaded();
+            });
+    }
+}
+
+void DAWComponent::onDictionaryLoaded()
+{
+    if (isDying.load()) return;
+    // Dictionary is ready but voice bank still loading — update the status text
+    loadingOverlay.setStatus("Loading voice bank samples...");
+}
+
+void DAWComponent::onVoiceBankLoaded()
+{
+    if (isDying.load()) return;
+    isVocalBankReady.store(true);
+    refreshTransportEnabled();
+    loadingOverlay.setVisible(false);
+    resized();
+    repaint();
+    DBG("Voice bank load complete - UI unblocked");
+}
+
+void DAWComponent::refreshTransportEnabled()
+{
+    const bool ready = isVocalBankReady.load();
+
+    // Transport controls require audio resources
+    playButton.setEnabled(ready);
+    pauseButton.setEnabled(ready);
+    stopButton.setEnabled(ready);
+    metronomeButton.setEnabled(ready);
+
+    // Inspector also requires the dictionary (which comes with the voice bank load)
+    inspectorToggleButton.setEnabled(ready);
+
+    // Dim the buttons visually when disabled
+    const juce::Colour dimText = juce::Colour(120, 120, 140);
+    const juce::Colour liveText = juce::Colours::white;
+    const juce::Colour c = ready ? liveText : dimText;
+
+    for (auto* b : { &playButton, &pauseButton, &stopButton, &metronomeButton, &inspectorToggleButton })
+    {
+        b->setColour(juce::TextButton::textColourOnId, c);
+        b->setColour(juce::TextButton::textColourOffId, c);
+    }
+}
+
+// ============================================================================
+//  LoadingOverlay
+// ============================================================================
+
+DAWComponent::LoadingOverlay::LoadingOverlay()
+{
+    setInterceptsMouseClicks(true, false);   // swallows clicks so transport can't be hammered
+    startTimerHz(30);   // animate dots
+}
+
+void DAWComponent::LoadingOverlay::setStatus(const juce::String& s)
+{
+    statusText = s;
+    repaint();
+}
+
+void DAWComponent::LoadingOverlay::timerCallback()
+{
+    animPhase += 0.04f;
+    if (animPhase > 1.0f) animPhase -= 1.0f;
+    repaint();
+}
+
+void DAWComponent::LoadingOverlay::paint(juce::Graphics& g)
+{
+    // Dark semi-transparent wash over the whole DAW
+    g.fillAll(juce::Colour(15, 15, 25).withAlpha(0.88f));
+
+    auto r = getLocalBounds().toFloat();
+
+    // Centered card
+    const float cardW = 360.0f;
+    const float cardH = 120.0f;
+    juce::Rectangle<float> card(r.getCentreX() - cardW * 0.5f,
+        r.getCentreY() - cardH * 0.5f,
+        cardW, cardH);
+
+    g.setColour(juce::Colour(30, 15, 50));
+    g.fillRoundedRectangle(card, 10.0f);
+    g.setColour(juce::Colours::hotpink.withAlpha(0.6f));
+    g.drawRoundedRectangle(card, 10.0f, 1.5f);
+
+    // Status text
+    g.setColour(juce::Colours::white);
+    g.setFont(juce::Font(15.0f, juce::Font::bold));
+    g.drawText(statusText,
+        card.withHeight(card.getHeight() - 40).translated(0, 8),
+        juce::Justification::centred);
+
+    // Animated dots: three dots pulsing in sequence
+    const float dotY = card.getBottom() - 30.0f;
+    const float centre = card.getCentreX();
+    const float spacing = 18.0f;
+    for (int i = 0; i < 3; ++i)
+    {
+        float phase = animPhase + i * 0.33f;
+        if (phase > 1.0f) phase -= 1.0f;
+        float alpha = 0.3f + 0.7f * std::abs(std::sin(phase * juce::MathConstants<float>::pi));
+        g.setColour(juce::Colours::hotpink.withAlpha(alpha));
+        g.fillEllipse(centre + (i - 1) * spacing - 4.0f, dotY, 8.0f, 8.0f);
+    }
 }

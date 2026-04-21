@@ -1,5 +1,6 @@
 #include <JuceHeader.h>
 #include "DatabaseManager.h"
+#include "Secrets.h"
 #include <libpq-fe.h>
 #include <curl/curl.h>
 
@@ -19,12 +20,9 @@ static size_t curlReadCallback(char* ptr, size_t size, size_t nmemb, void* userp
     return toWrite;
 }
 
-const std::string DatabaseManager::CONNECTION_STRING =
-#PUT THE CONNECTION STRING HERE!!!!!!!
-
 DatabaseManager::DatabaseManager()
 {
-    pgConnection = PQconnectdb(CONNECTION_STRING.c_str());
+    pgConnection = PQconnectdb(VocalNiteSecrets::kPostgresConnectionString.c_str());
 
     if (PQstatus(pgConnection) != CONNECTION_OK)
     {
@@ -134,8 +132,8 @@ bool DatabaseManager::signUp(const juce::String& username, const juce::String& e
         DBG("Signup error: " + juce::String(PQerrorMessage(pgConnection)));
     else
         DBG("Signup successful for: " + username);
-        if (userType == "educational")
-            sendVerificationEmail(email, token);
+    if (userType == "educational")
+        sendVerificationEmail(email, token);
 
     PQclear(result);
     return success;
@@ -211,10 +209,36 @@ int DatabaseManager::getUserId(const juce::String& username)
     return userId;
 }
 
+juce::String DatabaseManager::getUserType(const juce::String& username)
+{
+    if (!pgConnection || username.isEmpty()) return {};
+
+    std::string query = "SELECT user_type, email_verified FROM Users WHERE username = $1";
+    const char* params[1] = { username.toRawUTF8() };
+
+    PGresult* result = PQexecParams(pgConnection, query.c_str(), 1, nullptr, params, nullptr, nullptr, 0);
+
+    juce::String userType;
+    if (PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) > 0)
+    {
+        juce::String type = juce::String(PQgetvalue(result, 0, 0));
+        bool emailVerified = juce::String(PQgetvalue(result, 0, 1)) == "t";
+
+        // Educational access requires verified email
+        if (type == "educational" && !emailVerified)
+            userType = "normal";   // downgrade to normal if not verified
+        else
+            userType = type;
+    }
+
+    PQclear(result);
+    return userType;
+}
+
 bool DatabaseManager::sendVerificationEmail(const juce::String& email, const juce::String& token)
 {
-    const std::string gmailUser = "vocalnite3@gmail.com";
-	#PUT THE GMAIL APP PASSWORD HERE!!!!!!!!
+    const std::string gmailUser = VocalNiteSecrets::kGmailUser;
+    const std::string gmailPassword = VocalNiteSecrets::kGmailPassword;
 
     const std::string emailBody =
         "From: VocalNite <" + gmailUser + ">\r\n"

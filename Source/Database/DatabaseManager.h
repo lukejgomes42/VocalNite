@@ -18,6 +18,7 @@ public:
     bool emailExists(const juce::String& email);
     bool login(const juce::String& username, const juce::String& password);
     int getUserId(const juce::String& username);
+    juce::String getUserType(const juce::String& username);
 
     void testPostgresConnection();
 
@@ -34,5 +35,4 @@ private:
     PGconn* pgConnection = nullptr;
     juce::String lastLoginError;
 
-    static const std::string CONNECTION_STRING;
 };

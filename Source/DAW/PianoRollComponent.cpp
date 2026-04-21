@@ -1,6 +1,8 @@
 #include <JuceHeader.h>
 #include "PianoRollComponent.h"
 #include "../Database/DatabaseManager.h"
+#include "../Educational/EducationalModeManager.h"
+#include "../Educational/TooltipRegistry.h"
 #include <libpq-fe.h>
 
 PianoRollComponent::PianoRollComponent(int patternId)
@@ -61,11 +63,17 @@ PianoRollComponent::PianoRollComponent(int patternId)
     addAndMakeVisible(lyricEditor);
 
     loadNotes();
+
+    // Educational-mode tooltips
+    EducationalModeManager::getInstance().addListener(this);
+    applyTooltips(EducationalModeManager::getInstance().isEnabled());
+
     setSize(900, 400);
 }
 
 PianoRollComponent::~PianoRollComponent()
 {
+    EducationalModeManager::getInstance().removeListener(this);
     if (onEditorClosed)
         onEditorClosed();
 }
@@ -430,4 +438,28 @@ void PianoRollComponent::loadNotes()
         DBG("Load notes error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
     }
     PQclear(res);
+}
+// ============================================================================
+//  Educational mode: tooltips
+// ============================================================================
+
+void PianoRollComponent::educationalModeChanged(bool isEnabled)
+{
+    applyTooltips(isEnabled);
+}
+
+void PianoRollComponent::applyTooltips(bool eduEnabled)
+{
+    if (eduEnabled)
+    {
+        // The whole roll explains tile placement + row/column semantics
+        setTooltip(TooltipRegistry::get("pianoRollTile"));
+        // The inline text editor explains lyric → phoneme conversion
+        lyricEditor.setTooltip(TooltipRegistry::get("lyricInput"));
+    }
+    else
+    {
+        setTooltip({});
+        lyricEditor.setTooltip({});
+    }
 }

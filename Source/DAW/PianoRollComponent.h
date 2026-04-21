@@ -1,8 +1,11 @@
 #pragma once
 #include <JuceHeader.h>
+#include "../Educational/EducationalModeManager.h"
 
 class PianoRollComponent : public juce::Component,
-    public juce::ScrollBar::Listener
+    public juce::ScrollBar::Listener,
+    public juce::SettableTooltipClient,
+    public EducationalModeManager::Listener
 {
 public:
     PianoRollComponent(int patternId = -1);
@@ -21,6 +24,9 @@ public:
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
+
+    // EducationalModeManager::Listener
+    void educationalModeChanged(bool isEnabled) override;
 
 private:
     int currentPatternId = -1;
@@ -63,6 +69,7 @@ private:
     void saveNote(int pitch, int beat, const juce::String& lyric = "", int duration = 1);
     void deleteNote(int pitch, int beat);
     void loadNotes();
+    void applyTooltips(bool eduEnabled);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PianoRollComponent)
 };

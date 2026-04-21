@@ -113,6 +113,30 @@ ProjectManagerComponent::ProjectManagerComponent()
     recentProjectsList.setModel(this);
     addAndMakeVisible(recentProjectsList);
 
+    // Educational Mode toggle (hidden by default; shown only for verified edu users)
+    educationalModeToggle.setButtonText("Educational Mode");
+    educationalModeToggle.setColour(juce::ToggleButton::textColourId, juce::Colours::cyan);
+    educationalModeToggle.setColour(juce::ToggleButton::tickColourId, juce::Colours::cyan);
+    educationalModeToggle.setColour(juce::ToggleButton::tickDisabledColourId,
+        juce::Colour(60, 60, 80));
+    educationalModeToggle.setToggleState(EducationalModeManager::getInstance().isEnabled(),
+        juce::dontSendNotification);
+    educationalModeToggle.onClick = [this]()
+        {
+            bool newState = educationalModeToggle.getToggleState();
+            EducationalModeManager::getInstance().setEnabled(newState);
+        };
+    educationalModeToggle.setVisible(false);
+    addAndMakeVisible(educationalModeToggle);
+
+    educationalModeHint.setFont(juce::Font(11.0f, juce::Font::italic));
+    educationalModeHint.setColour(juce::Label::textColourId, juce::Colour(120, 120, 150));
+    educationalModeHint.setJustificationType(juce::Justification::centred);
+    educationalModeHint.setText("Tooltips, synthesis inspector, and visual hints",
+        juce::dontSendNotification);
+    educationalModeHint.setVisible(false);
+    addAndMakeVisible(educationalModeHint);
+
     // CREATE
     createButton.onClick = [this]()
         {
@@ -305,7 +329,12 @@ void ProjectManagerComponent::resized()
     // List box fills most of the card, below the header
     int listTop = card.getY() + 42;
     int btnH = 38;
-    int btnY = card.getBottom() - btnH - 12;
+
+    // Reserve space for educational toggle + hint if visible
+    bool showEdu = educationalModeToggle.isVisible();
+    int eduBlockH = showEdu ? 48 : 0;   // toggle row + hint line
+
+    int btnY = card.getBottom() - btnH - 12 - eduBlockH;
     int listBottom = btnY - 10;
 
     recentProjectsList.setBounds(card.getX() + 12, listTop,
@@ -315,6 +344,15 @@ void ProjectManagerComponent::resized()
     int btnW = (card.getWidth() - 48) / 2;
     createButton.setBounds(card.getX() + 16, btnY, btnW, btnH);
     openButton.setBounds(card.getX() + 16 + btnW + 16, btnY, btnW, btnH);
+
+    if (showEdu)
+    {
+        int toggleY = btnY + btnH + 8;
+        educationalModeToggle.setBounds(card.getX() + 16, toggleY,
+            card.getWidth() - 32, 22);
+        educationalModeHint.setBounds(card.getX() + 16, toggleY + 22,
+            card.getWidth() - 32, 16);
+    }
 
     statusLabel.setBounds(card.getX(), card.getBottom() + 6, card.getWidth(), 18);
 }
@@ -332,5 +370,42 @@ void ProjectManagerComponent::setUsername(const juce::String& name)
 {
     topBar.setUsername(name);
     currentUsername = name;
+    currentUserType = DatabaseManager::get().getUserType(name);
+    applyUserType();
     refreshRecentProjects();
+}
+
+void ProjectManagerComponent::applyUserType()
+{
+    bool isEducational = (currentUserType == "educational");
+
+    // Toggle only exists for educational users
+    educationalModeToggle.setVisible(isEducational);
+    educationalModeHint.setVisible(isEducational);
+
+    if (!isEducational)
+    {
+        // A non-edu user must never have ed-mode on (e.g. if they logged out
+        // from an edu session in the same app run, force it off).
+        if (EducationalModeManager::getInstance().isEnabled())
+            EducationalModeManager::getInstance().setEnabled(false);
+        educationalModeToggle.setToggleState(false, juce::dontSendNotification);
+    }
+    else
+    {
+        // Sync the toggle to whatever the manager's state currently is
+        educationalModeToggle.setToggleState(
+            EducationalModeManager::getInstance().isEnabled(),
+            juce::dontSendNotification);
+    }
+
+    resized();
+    repaint();
+}
+
+ProjectManagerComponent::~ProjectManagerComponent()
+{
+    // Turn ed-mode off when this screen is destroyed (i.e. user signs out
+    // or opens a project). Keeps state sane across screen transitions.
+    // DAWComponent re-reads the manager state on its own construction.
 }

@@ -39,7 +39,34 @@
         </GROUP>
       </GROUP>
     </GROUP>
+    <GROUP id="{2B266A99-55D2-0462-D5EC-F49FA08C7201}" name="Resources">
+      <GROUP id="{26273908-35A7-208B-F6DB-A2CB2A3C116C}" name="database">
+        <FILE id="vcF2PP" name="vocalnitedb.db" compile="0" resource="1" file="Resources/database/vocalnitedb.db"/>
+      </GROUP>
+      <GROUP id="{F42397E7-D4D3-01C1-5D98-9061DD0DE510}" name="VoiceBank"/>
+      <FILE id="I9XQ7i" name="cmudict.txt" compile="0" resource="1" file="Resources/cmudict.txt"/>
+    </GROUP>
     <GROUP id="{69EC30F4-DBF3-583D-B33A-8D575564E6E7}" name="Source">
+      <GROUP id="{D97D73C3-7620-AE36-71AA-AE85DE00864A}" name="Educational">
+        <FILE id="j0rZhe" name="EducationalModeManager.h" compile="0" resource="0"
+              file="Source/Educational/EducationalModeManager.h"/>
+        <FILE id="C0iIfh" name="HighlightOverlay.h" compile="0" resource="0"
+              file="Source/Educational/HighlightOverlay.h"/>
+        <FILE id="rYbX8R" name="SynthesisInspector.cpp" compile="1" resource="0"
+              file="Source/Educational/SynthesisInspector.cpp"/>
+        <FILE id="G3fr38" name="SynthesisInspector.h" compile="0" resource="0"
+              file="Source/Educational/SynthesisInspector.h"/>
+        <FILE id="iIuhjk" name="TooltipRegistry.cpp" compile="1" resource="0"
+              file="Source/Educational/TooltipRegistry.cpp"/>
+        <FILE id="bqs3hU" name="TooltipRegistry.h" compile="0" resource="0"
+              file="Source/Educational/TooltipRegistry.h"/>
+      </GROUP>
+      <GROUP id="{C87044F8-4105-25A1-3332-995012402708}" name="Audio">
+        <FILE id="WlFnwo" name="VocalSynthEngine.cpp" compile="1" resource="0"
+              file="Source/Audio/VocalSynthEngine.cpp"/>
+        <FILE id="p7lOjg" name="VocalSynthEngine.h" compile="0" resource="0"
+              file="Source/Audio/VocalSynthEngine.h"/>
+      </GROUP>
       <GROUP id="{54E36A8B-7473-4D98-4483-5978EF8BEF55}" name="DAW">
         <FILE id="j40C6N" name="DAWComponent.cpp" compile="1" resource="0"
               file="Source/DAW/DAWComponent.cpp"/>
@@ -75,6 +102,9 @@
               file="Source/Database/DatabaseManager.cpp"/>
         <FILE id="ZXLpCr" name="DatabaseManager.h" compile="0" resource="0"
               file="Source/Database/DatabaseManager.h"/>
+        <FILE id="WzPRBL" name="Secrets.h" compile="0" resource="0" file="Source/Database/Secrets.h"/>
+        <FILE id="wflAwM" name="Secrets.h.template" compile="0" resource="1"
+              file="Source/Database/Secrets.h.template"/>
       </GROUP>
       <GROUP id="{CCA3DA6D-0CF3-4AD1-4AF8-72A482E3F308}" name="Main">
         <FILE id="Qo00D4" name="Main.cpp" compile="1" resource="0" file="Source/Main/Main.cpp"/>
@@ -88,18 +118,24 @@
     <MODULE id="juce_audio_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_audio_devices" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_audio_formats" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_processors" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_audio_processors_headless" showAllCode="1" useLocalCopy="0"
+            useGlobalPath="1"/>
+    <MODULE id="juce_audio_utils" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_core" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_cryptography" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_data_structures" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_events" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_graphics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
   </MODULES>
   <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
   <EXPORTFORMATS>
-    <VS2026 targetFolder="Builds/VisualStudio2026">
+    <VS2026 targetFolder="Builds/VisualStudio2026" extraLinkerFlags="libpq.lib&#10;libcurl.lib">
       <CONFIGURATIONS>
-        <CONFIGURATION isDebug="1" name="Debug" targetName="VocalNite" headerPath="../../Source/Database&#10;../../External/sqlite&#10;../../External/SQLiteCpp/include"/>
+        <CONFIGURATION isDebug="1" name="Debug" targetName="VocalNite" headerPath="../../Source/Database&#10;../../External/sqlite&#10;../../External/SQLiteCpp/include&#10;C:\vcpkg\installed\x64-windows\include"
+                       libraryPath="C:\vcpkg\installed\x64-windows\lib"/>
         <CONFIGURATION isDebug="0" name="Release" targetName="VocalNite" headerPath="../../Source/Database&#10;../../External/sqlite&#10;../../External/SQLiteCpp/include"/>
       </CONFIGURATIONS>
       <MODULEPATHS>
@@ -112,6 +148,10 @@
         <MODULEPATH id="juce_audio_basics" path="../JUCE/modules"/>
         <MODULEPATH id="juce_audio_devices" path="../JUCE/modules"/>
         <MODULEPATH id="juce_audio_formats" path="../JUCE/modules"/>
+        <MODULEPATH id="juce_audio_utils" path="../JUCE/modules"/>
+        <MODULEPATH id="juce_audio_processors" path="../JUCE/modules"/>
+        <MODULEPATH id="juce_gui_extra" path="../JUCE/modules"/>
+        <MODULEPATH id="juce_audio_processors_headless" path="../JUCE/modules"/>
       </MODULEPATHS>
     </VS2026>
   </EXPORTFORMATS>
