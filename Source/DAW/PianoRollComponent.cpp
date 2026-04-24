@@ -14,11 +14,9 @@ PianoRollComponent::PianoRollComponent(int patternId)
     verticalScroll.addListener(this);
     horizontalScroll.addListener(this);
 
-    verticalScroll.setRangeLimits(0.0, numKeys * noteHeight);
-    horizontalScroll.setRangeLimits(0.0, numBeats * cellWidth);
-
-    verticalScroll.setCurrentRange(0.0, 200.0);
-    horizontalScroll.setCurrentRange(0.0, 400.0);
+    // Range limits + viewport size are both driven from resized() now.
+    verticalScroll.setRangeLimits(0.0, (double)(numKeys * noteHeight));
+    horizontalScroll.setRangeLimits(0.0, (double)(numBeats * cellWidth));
 
     // Lyric editor setup
     lyricEditor.setMultiLine(false);
@@ -26,40 +24,13 @@ PianoRollComponent::PianoRollComponent(int patternId)
     lyricEditor.setColour(juce::TextEditor::textColourId, juce::Colours::white);
     lyricEditor.setColour(juce::TextEditor::outlineColourId, juce::Colours::hotpink);
     lyricEditor.setVisible(false);
-    lyricEditor.onReturnKey = [this]()
-        {
-            if (editingNoteIndex >= 0 && editingNoteIndex < placedNotes.size())
-            {
-                juce::String lyric = lyricEditor.getText();
-                placedNotes.getReference(editingNoteIndex).lyric = lyric;
-
-                // Update in database
-                if (currentPatternId >= 0)
-                {
-                    std::string patternIdStr = std::to_string(currentPatternId);
-                    std::string pitchStr = std::to_string(placedNotes[editingNoteIndex].pitch);
-                    std::string beatStr = std::to_string(placedNotes[editingNoteIndex].beat);
-                    const char* params[4] = { lyric.toRawUTF8(), patternIdStr.c_str(), pitchStr.c_str(), beatStr.c_str() };
-
-                    PGresult* res = PQexecParams(DatabaseManager::get().db(),
-                        "UPDATE PatternNotes SET lyric = $1 WHERE pattern_id = $2 AND pitch = $3 AND beat = $4",
-                        4, nullptr, params, nullptr, nullptr, 0);
-
-                    if (PQresultStatus(res) != PGRES_COMMAND_OK)
-                        DBG("Lyric save error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
-                    PQclear(res);
-                }
-
-                editingNoteIndex = -1;
-                lyricEditor.setVisible(false);
-                repaint();
-            }
-        };
-    lyricEditor.onEscapeKey = [this]()
-        {
-            editingNoteIndex = -1;
-            lyricEditor.setVisible(false);
-        };
+    lyricEditor.onReturnKey = [this]() { commitCurrentLyricEdit(); };
+    lyricEditor.onEscapeKey = [this]() { discardCurrentLyricEdit(); };
+    // Note: deliberately NOT wiring onFocusLost. JUCE posts focus-loss messages
+    // asynchronously, which races with our mouseDown fluid-switch path (commit
+    // old note → immediately open editor on new note). An async onFocusLost
+    // firing after step 2 would clobber the newly-opened editor. All real
+    // commit paths are explicit: Enter, click-on-different-note in mouseDown.
     addAndMakeVisible(lyricEditor);
 
     loadNotes();
@@ -95,11 +66,47 @@ void PianoRollComponent::scrollBarMoved(juce::ScrollBar* bar, double newRangeSta
         verticalOffset = newRangeStart;
     else if (bar == &horizontalScroll)
         horizontalOffset = newRangeStart;
+
+    // Keep the lyric editor glued to its note as the grid scrolls.
+    if (lyricEditor.isVisible())
+        positionLyricEditorForEditingNote();
+
     repaint();
 }
 
 void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
 {
+    // ------------------------------------------------------------------
+    // Lyric-editor click dismissal
+    // ------------------------------------------------------------------
+    // If the editor is open, clicks that reach this handler are by
+    // definition OUTSIDE the TextEditor (JUCE routes in-editor clicks
+    // straight to it). We block those clicks from creating/selecting
+    // notes and decide between commit and discard based on target:
+    //   • click on the same note we're editing  → ignore (do nothing)
+    //   • click on a different existing note / resize handle → commit
+    //     the current lyric, then fall through so the click is handled
+    //     normally (fluid switch to the next note)
+    //   • click on empty grid or off-grid → discard and consume click
+    if (lyricEditor.isVisible() && editingNoteIndex >= 0)
+    {
+        const int idx = findNoteIndexAtMouse(e);
+
+        if (idx >= 0 && idx == editingNoteIndex)
+            return;
+
+        if (idx >= 0)
+            commitCurrentLyricEdit();   // fall through to normal handling
+        else
+        {
+            discardCurrentLyricEdit();
+            return;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Right-click: delete note under cursor
+    // ------------------------------------------------------------------
     if (e.mods.isRightButtonDown())
     {
         int gridX = e.x - keyWidth + (int)horizontalOffset;
@@ -125,6 +132,10 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
         }
         return;
     }
+
+    // ------------------------------------------------------------------
+    // Left-click: resize / edit existing / create new
+    // ------------------------------------------------------------------
     int gridX = e.x - keyWidth + (int)horizontalOffset;
     int gridY = e.y - headerHeight + (int)verticalOffset;
 
@@ -153,17 +164,16 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
             return;
         }
     }
-    // Toggle note on/off
+
+    // Click on any cell within an existing note's duration → open lyric editor
     for (int i = placedNotes.size() - 1; i >= 0; --i)
     {
-        if (placedNotes[i].pitch == pitch && placedNotes[i].beat == beat)
+        const auto& n = placedNotes[i];
+        if (n.pitch == pitch && beat >= n.beat && beat < n.beat + n.duration)
         {
-            // If clicking existing note, open lyric editor
             editingNoteIndex = i;
-            int noteX = keyWidth + beat * cellWidth - (int)horizontalOffset;
-            int noteY = headerHeight + pitch * noteHeight - (int)verticalOffset;
-            lyricEditor.setText(placedNotes[i].lyric);
-            lyricEditor.setBounds(noteX, noteY, cellWidth, noteHeight);
+            lyricEditor.setText(n.lyric);
+            positionLyricEditorForEditingNote();
             lyricEditor.setVisible(true);
             lyricEditor.grabKeyboardFocus();
             lyricEditor.selectAll();
@@ -171,6 +181,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
         }
     }
 
+    // Empty cell: create note + open editor
     saveNote(pitch, beat, "");
     Note newNote;
     newNote.pitch = pitch;
@@ -178,12 +189,9 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
     newNote.lyric = "";
     placedNotes.add(newNote);
 
-    // Show lyric editor for new note
     editingNoteIndex = placedNotes.size() - 1;
-    int noteX = keyWidth + beat * cellWidth - (int)horizontalOffset;
-    int noteY = headerHeight + pitch * noteHeight - (int)verticalOffset;
     lyricEditor.setText("");
-    lyricEditor.setBounds(noteX, noteY, cellWidth, noteHeight);
+    positionLyricEditorForEditingNote();
     lyricEditor.setVisible(true);
     lyricEditor.grabKeyboardFocus();
     repaint();
@@ -227,25 +235,33 @@ void PianoRollComponent::mouseDrag(const juce::MouseEvent& e)
     }
 }
 
-void PianoRollComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
+void PianoRollComponent::mouseWheelMove(const juce::MouseEvent& e,
+    const juce::MouseWheelDetails& wheel)
 {
-    if (e.x < keyWidth)
+    juce::ignoreUnused(e);
+
+    // Wheel step in pixels. Tiny deltas (macOS smooth scroll) still get a
+    // consistent feel per notch.
+    constexpr double kStep = 60.0;
+    const double dy = (double)wheel.deltaY * kStep;
+    const double dx = (double)wheel.deltaX * kStep;
+
+    // Shift+Wheel panning horizontally is the DAW convention. Also honour
+    // a horizontal-dominant touchpad gesture.
+    const bool horizontalIntent = e.mods.isShiftDown() || std::abs(dx) > std::abs(dy);
+
+    if (horizontalIntent)
     {
-        // Scrolling over piano keys - scroll vertically
-        double newOffset = verticalOffset - (double)wheel.deltaY * 60.0;
-        newOffset = std::max(0.0, std::min(newOffset, verticalScroll.getRangeLimit().getEnd()));
-        verticalScroll.setCurrentRangeStart(newOffset);
+        const double delta = (std::abs(dx) > 1.0e-3) ? dx : dy;
+        double newH = horizontalOffset - delta;
+        newH = juce::jlimit(0.0, getMaxHorizontalOffset(), newH);
+        horizontalScroll.setCurrentRangeStart(newH);
     }
     else
     {
-        // Scrolling over grid - vertical scrolls tracks, horizontal scrolls beats
-        double newVOffset = verticalOffset - (double)wheel.deltaY * 60.0;
-        newVOffset = std::max(0.0, std::min(newVOffset, verticalScroll.getRangeLimit().getEnd()));
-        verticalScroll.setCurrentRangeStart(newVOffset);
-
-        double newHOffset = horizontalOffset - (double)wheel.deltaX * 60.0;
-        newHOffset = std::max(0.0, std::min(newHOffset, horizontalScroll.getRangeLimit().getEnd()));
-        horizontalScroll.setCurrentRangeStart(newHOffset);
+        double newV = verticalOffset - dy;
+        newV = juce::jlimit(0.0, getMaxVerticalOffset(), newV);
+        verticalScroll.setCurrentRangeStart(newV);
     }
 }
 void PianoRollComponent::paint(juce::Graphics& g)
@@ -258,116 +274,158 @@ void PianoRollComponent::paint(juce::Graphics& g)
     // Background
     g.fillAll(juce::Colour(15, 15, 25));
 
-    // ── Beat header ──
-    g.setColour(juce::Colour(30, 30, 50));
-    g.fillRect(keyWidth, 0, gridWidth, headerHeight);
-    g.setColour(juce::Colours::grey);
-    g.setFont(11.0f);
-    int startBeat = scrolledX / cellWidth;
-    for (int b = startBeat; b < numBeats; ++b)
-    {
-        int x = keyWidth + b * cellWidth - scrolledX;
-        if (x > getWidth()) break;
-        g.drawText(juce::String(b + 1), x + 2, 0, cellWidth, headerHeight, juce::Justification::centredLeft);
-        g.setColour(juce::Colour(50, 50, 80));
-        g.drawLine(x, 0, x, headerHeight, 1.0f);
-        g.setColour(juce::Colours::grey);
-    }
-
     // ── Piano keys ──
-    int startKey = scrolledY / noteHeight;
-    for (int i = startKey; i < numKeys; ++i)
+    // Clipped to [0, headerHeight] .. [keyWidth, getHeight()-12] so a scrolled
+    // key that would spill up into the header area can't bleed over the beat
+    // numbers (which sit at y=0..headerHeight).
     {
-        int y = headerHeight + i * noteHeight - scrolledY;
-        if (y > getHeight()) break;
+        juce::Graphics::ScopedSaveState clipState(g);
+        g.reduceClipRegion(0, headerHeight, keyWidth, gridHeight);
 
-        bool black = isBlackKey(i);
-
-        // White key background
-        g.setColour(black ? juce::Colours::black : juce::Colours::white);
-        g.fillRect(0, y, keyWidth, noteHeight);
-
-        // Key border
-        g.setColour(juce::Colours::darkgrey);
-        g.drawRect(0, y, keyWidth, noteHeight, 1);
-
-        // Note name on white keys
-        if (!black)
+        int startKey = scrolledY / noteHeight;
+        for (int i = startKey; i < numKeys; ++i)
         {
-            int octave = (numKeys - 1 - i) / 12;
-            int noteInOctave = (numKeys - 1 - i) % 12;
-            juce::String noteNames[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-            if (noteInOctave == 0)
+            int y = headerHeight + i * noteHeight - scrolledY;
+            if (y > getHeight()) break;
+
+            bool black = isBlackKey(i);
+
+            // White/black key background
+            g.setColour(black ? juce::Colours::black : juce::Colours::white);
+            g.fillRect(0, y, keyWidth, noteHeight);
+
+            // Key border
+            g.setColour(juce::Colours::darkgrey);
+            g.drawRect(0, y, keyWidth, noteHeight, 1);
+
+            // Octave label on Cs
+            if (!black)
             {
-                g.setColour(juce::Colours::black);
-                g.setFont(10.0f);
-                g.drawText("C" + juce::String(octave), 2, y, keyWidth - 4, noteHeight, juce::Justification::centredLeft);
+                int octave = (numKeys - 1 - i) / 12;
+                int noteInOctave = (numKeys - 1 - i) % 12;
+                if (noteInOctave == 0)
+                {
+                    g.setColour(juce::Colours::black);
+                    g.setFont(10.0f);
+                    g.drawText("C" + juce::String(octave), 2, y, keyWidth - 4, noteHeight,
+                        juce::Justification::centredLeft);
+                }
             }
         }
     }
 
-    // ── Grid ──
-    for (int i = startKey; i < numKeys; ++i)
+    // ── Grid rows, beat lines, placed notes ──
+    // All clipped to the grid area. A scrolled-up note/row/beat line that
+    // would otherwise paint across the beat header or key column is trimmed
+    // here.
     {
-        int y = headerHeight + i * noteHeight - scrolledY;
-        if (y > getHeight()) break;
+        juce::Graphics::ScopedSaveState clipState(g);
+        g.reduceClipRegion(keyWidth, headerHeight, gridWidth, gridHeight);
 
-        bool black = isBlackKey(i);
-        g.setColour(black ? juce::Colour(20, 20, 35) : juce::Colour(28, 28, 45));
-        g.fillRect(keyWidth, y, gridWidth, noteHeight);
-
-        g.setColour(juce::Colour(45, 45, 70));
-        g.drawLine(keyWidth, y, keyWidth + gridWidth, y, 1.0f);
-    }
-
-    // Vertical beat lines on grid
-    for (int b = startBeat; b <= numBeats; ++b)
-    {
-        int x = keyWidth + b * cellWidth - scrolledX;
-        if (x > getWidth()) break;
-        g.setColour(b % 4 == 0 ? juce::Colour(70, 70, 100) : juce::Colour(40, 40, 65));
-        g.drawLine(x, headerHeight, x, getHeight() - 12, 1.0f);
-    }
-
-    // ── Placed notes ──
-    for (auto& note : placedNotes)
-    {
-        int x = keyWidth + note.beat * cellWidth - scrolledX;
-        int y = headerHeight + note.pitch * noteHeight - scrolledY;
-        if (x + cellWidth < keyWidth || x > getWidth()) continue;
-        if (y + noteHeight < headerHeight || y > getHeight()) continue;
-
-        int noteW = cellWidth * note.duration;
-        g.setColour(getNoteColour(note.pitch));
-        g.fillRoundedRectangle(x + 1, y + 1, noteW - 2, noteHeight - 2, 3.0f);
-        g.setColour(juce::Colours::white.withAlpha(0.4f));
-        g.drawRoundedRectangle(x + 1, y + 1, noteW - 2, noteHeight - 2, 3.0f, 1.0f);
-        if (note.lyric.isNotEmpty())
+        int startKey = scrolledY / noteHeight;
+        for (int i = startKey; i < numKeys; ++i)
         {
-            g.setColour(juce::Colours::white);
-            g.setFont(10.0f);
-            g.drawText(note.lyric, x + 2, y + 1, noteW - 4, noteHeight - 2, juce::Justification::centred);
+            int y = headerHeight + i * noteHeight - scrolledY;
+            if (y > getHeight()) break;
+
+            bool black = isBlackKey(i);
+            g.setColour(black ? juce::Colour(20, 20, 35) : juce::Colour(28, 28, 45));
+            g.fillRect(keyWidth, y, gridWidth, noteHeight);
+
+            g.setColour(juce::Colour(45, 45, 70));
+            g.drawLine((float)keyWidth, (float)y,
+                (float)(keyWidth + gridWidth), (float)y, 1.0f);
         }
-        // Resize handle on right edge
-        g.setColour(juce::Colours::white.withAlpha(0.3f));
-        g.fillRect(x + noteW - 4, y + 2, 3, noteHeight - 4);
+
+        int startBeat = scrolledX / cellWidth;
+        for (int b = startBeat; b <= numBeats; ++b)
+        {
+            int x = keyWidth + b * cellWidth - scrolledX;
+            if (x > getWidth()) break;
+            g.setColour(b % 4 == 0 ? juce::Colour(70, 70, 100) : juce::Colour(40, 40, 65));
+            g.drawLine((float)x, (float)headerHeight,
+                (float)x, (float)(getHeight() - 12), 1.0f);
+        }
+
+        for (auto& note : placedNotes)
+        {
+            int x = keyWidth + note.beat * cellWidth - scrolledX;
+            int y = headerHeight + note.pitch * noteHeight - scrolledY;
+            if (x + cellWidth < keyWidth || x > getWidth()) continue;
+            if (y + noteHeight < headerHeight || y > getHeight()) continue;
+
+            int noteW = cellWidth * note.duration;
+            g.setColour(getNoteColour(note.pitch));
+            g.fillRoundedRectangle((float)(x + 1), (float)(y + 1),
+                (float)(noteW - 2), (float)(noteHeight - 2), 3.0f);
+            g.setColour(juce::Colours::white.withAlpha(0.4f));
+            g.drawRoundedRectangle((float)(x + 1), (float)(y + 1),
+                (float)(noteW - 2), (float)(noteHeight - 2), 3.0f, 1.0f);
+            if (note.lyric.isNotEmpty())
+            {
+                g.setColour(juce::Colours::white);
+                g.setFont(10.0f);
+                g.drawText(note.lyric, x + 2, y + 1, noteW - 4, noteHeight - 2,
+                    juce::Justification::centred);
+            }
+            // Resize handle on right edge
+            g.setColour(juce::Colours::white.withAlpha(0.3f));
+            g.fillRect(x + noteW - 4, y + 2, 3, noteHeight - 4);
+        }
     }
 
-    // Clip boundary
+    // ── Beat header ──
+    // Drawn LAST so it sits on top of any grid content that might have rendered
+    // right at the boundary. Fully opaque fill, then numbers.
+    g.setColour(juce::Colour(30, 30, 50));
+    g.fillRect(keyWidth, 0, gridWidth, headerHeight);
+    g.setColour(juce::Colours::grey);
+    g.setFont(11.0f);
+    {
+        juce::Graphics::ScopedSaveState clipState(g);
+        g.reduceClipRegion(keyWidth, 0, gridWidth, headerHeight);
+
+        int startBeat = scrolledX / cellWidth;
+        for (int b = startBeat; b < numBeats; ++b)
+        {
+            int x = keyWidth + b * cellWidth - scrolledX;
+            if (x > getWidth()) break;
+            g.drawText(juce::String(b + 1), x + 2, 0, cellWidth, headerHeight,
+                juce::Justification::centredLeft);
+            g.setColour(juce::Colour(50, 50, 80));
+            g.drawLine((float)x, 0.0f, (float)x, (float)headerHeight, 1.0f);
+            g.setColour(juce::Colours::grey);
+        }
+    }
+
+    // Top-left corner cover (where key column meets beat header)
     g.setColour(juce::Colour(15, 15, 25));
     g.fillRect(0, 0, keyWidth, headerHeight);
 }
 
 void PianoRollComponent::resized()
 {
-    int scrollBarThickness = 12;
+    constexpr int scrollBarThickness = 12;
+
     verticalScroll.setBounds(getWidth() - scrollBarThickness, headerHeight,
         scrollBarThickness, getHeight() - headerHeight - scrollBarThickness);
     horizontalScroll.setBounds(keyWidth, getHeight() - scrollBarThickness,
         getWidth() - keyWidth - scrollBarThickness, scrollBarThickness);
 
-    verticalScroll.setCurrentRange(verticalOffset, getHeight() - headerHeight);
-    horizontalScroll.setCurrentRange(horizontalOffset, getWidth() - keyWidth);
+    // Range limits describe the full virtual content; clamp/push viewport state
+    // into the scrollbars below.
+    verticalScroll.setRangeLimits(0.0, (double)(numKeys * noteHeight));
+    horizontalScroll.setRangeLimits(0.0, (double)(numBeats * cellWidth));
+
+    // First valid resize: centre the view on C4 so the user isn't dropped into
+    // the useless top-of-range region.
+    if (!initialScrollApplied && getWidth() > 0 && getHeight() > 0)
+    {
+        centreVerticallyOnMidi(60);
+        initialScrollApplied = true;
+    }
+
+    clampOffsetsToViewport();
 }
 
 void PianoRollComponent::saveNote(int pitch, int beat, const juce::String& lyric, int duration)
@@ -462,4 +520,162 @@ void PianoRollComponent::applyTooltips(bool eduEnabled)
         setTooltip({});
         lyricEditor.setTooltip({});
     }
+}
+// ============================================================================
+//  Scroll geometry helpers
+// ============================================================================
+
+int PianoRollComponent::getViewportWidth() const
+{
+    constexpr int scrollBarThickness = 12;
+    return std::max(0, getWidth() - keyWidth - scrollBarThickness);
+}
+
+int PianoRollComponent::getViewportHeight() const
+{
+    constexpr int scrollBarThickness = 12;
+    return std::max(0, getHeight() - headerHeight - scrollBarThickness);
+}
+
+double PianoRollComponent::getMaxVerticalOffset() const
+{
+    const double total = (double)(numKeys * noteHeight);
+    return std::max(0.0, total - (double)getViewportHeight());
+}
+
+double PianoRollComponent::getMaxHorizontalOffset() const
+{
+    const double total = (double)(numBeats * cellWidth);
+    return std::max(0.0, total - (double)getViewportWidth());
+}
+
+void PianoRollComponent::clampOffsetsToViewport()
+{
+    const double maxV = getMaxVerticalOffset();
+    const double maxH = getMaxHorizontalOffset();
+
+    // Re-clamp offsets in case the window shrunk while we were scrolled down.
+    if (verticalOffset > maxV)   verticalOffset = maxV;
+    if (horizontalOffset > maxH) horizontalOffset = maxH;
+
+    // Push the current viewport state into the scrollbars. The viewport size
+    // (second arg of setCurrentRange) controls the thumb size; clamp it so it
+    // can never exceed the total content range.
+    const double vSize = std::min((double)getViewportHeight(),
+        (double)(numKeys * noteHeight));
+    const double hSize = std::min((double)getViewportWidth(),
+        (double)(numBeats * cellWidth));
+    verticalScroll.setCurrentRange(verticalOffset, std::max(1.0, vSize));
+    horizontalScroll.setCurrentRange(horizontalOffset, std::max(1.0, hSize));
+}
+
+void PianoRollComponent::centreVerticallyOnMidi(int midi)
+{
+    // midi = (numKeys - 1 - gridPitch) + 12  =>  gridPitch = (numKeys + 11) - midi
+    const int gridPitch = juce::jlimit(0, numKeys - 1, (numKeys + 11) - midi);
+    const double targetY = (double)(gridPitch * noteHeight);
+    const double vh = (double)getViewportHeight();
+
+    double desired = targetY - (vh * 0.5) + (noteHeight * 0.5);
+    desired = juce::jlimit(0.0, getMaxVerticalOffset(), desired);
+
+    verticalOffset = desired;
+    verticalScroll.setCurrentRangeStart(desired);
+}
+
+// ============================================================================
+//  Lyric editor helpers
+// ============================================================================
+
+void PianoRollComponent::commitCurrentLyricEdit()
+{
+    // Idempotent: safe to call from multiple paths (onReturnKey, mouseDown
+    // interception). No-op if nothing's being edited.
+    if (editingNoteIndex < 0 || editingNoteIndex >= placedNotes.size())
+    {
+        editingNoteIndex = -1;
+        lyricEditor.setVisible(false);
+        return;
+    }
+
+    const juce::String lyric = lyricEditor.getText();
+    placedNotes.getReference(editingNoteIndex).lyric = lyric;
+
+    if (currentPatternId >= 0)
+    {
+        std::string patternIdStr = std::to_string(currentPatternId);
+        std::string pitchStr = std::to_string(placedNotes[editingNoteIndex].pitch);
+        std::string beatStr = std::to_string(placedNotes[editingNoteIndex].beat);
+        const char* params[4] = { lyric.toRawUTF8(),
+                                  patternIdStr.c_str(),
+                                  pitchStr.c_str(),
+                                  beatStr.c_str() };
+
+        PGresult* res = PQexecParams(DatabaseManager::get().db(),
+            "UPDATE PatternNotes SET lyric = $1 WHERE pattern_id = $2 AND pitch = $3 AND beat = $4",
+            4, nullptr, params, nullptr, nullptr, 0);
+
+        if (PQresultStatus(res) != PGRES_COMMAND_OK)
+            DBG("Lyric save error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+        PQclear(res);
+    }
+
+    editingNoteIndex = -1;
+    lyricEditor.setVisible(false);
+    repaint();
+}
+
+void PianoRollComponent::discardCurrentLyricEdit()
+{
+    // Revert: hide the editor without touching the in-memory note lyric or DB.
+    // The note itself (if newly created) stays — matches Escape-key behaviour.
+    editingNoteIndex = -1;
+    lyricEditor.setVisible(false);
+    repaint();
+}
+
+void PianoRollComponent::positionLyricEditorForEditingNote()
+{
+    if (editingNoteIndex < 0 || editingNoteIndex >= placedNotes.size()) return;
+
+    const auto& n = placedNotes[editingNoteIndex];
+    const int x = keyWidth + n.beat * cellWidth - (int)horizontalOffset;
+    const int y = headerHeight + n.pitch * noteHeight - (int)verticalOffset;
+    // Use the note's full duration so the editor covers stretched notes.
+    const int w = std::max(cellWidth, cellWidth * n.duration);
+    lyricEditor.setBounds(x, y, w, noteHeight);
+}
+
+int PianoRollComponent::findNoteIndexAtMouse(const juce::MouseEvent& e) const
+{
+    if (e.x < keyWidth || e.y < headerHeight) return -1;
+
+    const int gridX = e.x - keyWidth + (int)horizontalOffset;
+    const int gridY = e.y - headerHeight + (int)verticalOffset;
+    const int beat = gridX / cellWidth;
+    const int pitch = gridY / noteHeight;
+
+    if (beat < 0 || beat >= numBeats || pitch < 0 || pitch >= numKeys)
+        return -1;
+
+    // Resize-zone hits count as "on that note"
+    for (int i = placedNotes.size() - 1; i >= 0; --i)
+    {
+        const auto& n = placedNotes[i];
+        const int noteX = keyWidth + n.beat * cellWidth - (int)horizontalOffset;
+        const int noteY = headerHeight + n.pitch * noteHeight - (int)verticalOffset;
+        const int noteW = cellWidth * n.duration;
+        juce::Rectangle<int> resizeZone(noteX + noteW - 6, noteY, 6, noteHeight);
+        if (resizeZone.contains(e.x, e.y)) return i;
+    }
+
+    // Inside the note's body (covers multi-beat notes across their duration)
+    for (int i = placedNotes.size() - 1; i >= 0; --i)
+    {
+        const auto& n = placedNotes[i];
+        if (n.pitch == pitch && beat >= n.beat && beat < n.beat + n.duration)
+            return i;
+    }
+
+    return -1;
 }

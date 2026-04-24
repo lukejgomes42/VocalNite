@@ -90,6 +90,10 @@
               file="Source/UI/TopBarComponent.cpp"/>
         <FILE id="xHahFa" name="TopBarComponent.h" compile="0" resource="0"
               file="Source/UI/TopBarComponent.h"/>
+        <FILE id="rYVLyc" name="VoiceBankSelectorOverlay.cpp" compile="1" resource="0"
+              file="Source/UI/VoiceBankSelectorOverlay.cpp"/>
+        <FILE id="NuHayE" name="VoiceBankSelectorOverlay.h" compile="0" resource="0"
+              file="Source/UI/VoiceBankSelectorOverlay.h"/>
       </GROUP>
       <GROUP id="{1EE54313-8681-19E4-ED29-BE2DFD003258}" name="Animation">
         <FILE id="iZBlAS" name="GlowLines.cpp" compile="1" resource="0" file="Source/Animation/GlowLines.cpp"/>
@@ -102,7 +106,6 @@
               file="Source/Database/DatabaseManager.cpp"/>
         <FILE id="ZXLpCr" name="DatabaseManager.h" compile="0" resource="0"
               file="Source/Database/DatabaseManager.h"/>
-        <FILE id="WzPRBL" name="Secrets.h" compile="0" resource="0" file="Source/Database/Secrets.h"/>
         <FILE id="wflAwM" name="Secrets.h.template" compile="0" resource="1"
               file="Source/Database/Secrets.h.template"/>
       </GROUP>

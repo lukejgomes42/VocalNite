@@ -30,6 +30,12 @@ public:
     bool loadDictionary(const juce::File& cmuDictFile);
     bool loadVoiceBank(const juce::File& voiceBankFolder);
 
+    // Thread-safe hot-swap: pauses the audio thread, clears active + pending
+    // voices under queueLock, then reloads from the new folder and unpauses.
+    // Safe to call from any non-audio thread while audio is running.
+    // Used by the DAW character-select flow to switch between Aaron / UTAU / ...
+    bool reloadVoiceBank(const juce::File& voiceBankFolder);
+
     // ── Dictionary lookup (for educational / inspection features) ───────────
     // Returns the ARPAbet phonemes for a word, stress digits stripped.
     // Falls back to per-character lookup if the word isn't in the dictionary.
@@ -37,7 +43,11 @@ public:
     juce::StringArray lookupPhonemes(const juce::String& word) const;
 
     // ── Playback control ────────────────────────────────────────────────────
-    void queueLyric(const juce::String& lyric, int gridPitch, double bpm = 120.0);
+    // durationBeats: how long the note should hold, in beats (default 1.0).
+    // For durationBeats > 1.0, consonants keep their normal speech rate and
+    // the final vowel is stretched to fill the remainder (singer-style hold).
+    void queueLyric(const juce::String& lyric, int gridPitch,
+        double bpm = 120.0, double durationBeats = 1.0);
     void stop();
 
     // Pause: freezes all active voices in place and silences output. Unlike
@@ -173,7 +183,8 @@ private:
     // ── Helpers ─────────────────────────────────────────────────────────────
     Voice buildVoice(const std::vector<std::string>& phonemes,
         const std::string& noteFolder,
-        double secondsPerBeat);
+        double secondsPerBeat,
+        double durationBeats);
 
     // Lookup a buffer by key (e.g. "AH" or "AY-ER") trying noteFolder then all pitches
     const juce::AudioBuffer<float>* findBuffer(const std::string& key,

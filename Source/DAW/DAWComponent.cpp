@@ -7,6 +7,33 @@
 #include <libpq-fe.h>
 #include <unordered_set>
 
+// ──────────────────────────────────────────────────────────────────────────
+//  TopRightTooltipLookAndFeel
+//  A LookAndFeel variant that pins tooltips to the top-right corner of the
+//  parent window instead of following the cursor. Attached via setLookAndFeel
+//  on a dedicated TooltipWindow inside PatternEditorWindow — cursor-tracking
+//  tooltips elsewhere in the DAW are unaffected.
+// ──────────────────────────────────────────────────────────────────────────
+class TopRightTooltipLookAndFeel : public juce::LookAndFeel_V4
+{
+public:
+    juce::Rectangle<int> getTooltipBounds(const juce::String& tipText,
+        juce::Point<int> screenPos,
+        juce::Rectangle<int> parentArea) override
+    {
+        // Ask the base class to compute the natural size for this text, then
+        // ignore its position and anchor top-right with a 12px inset.
+        const auto natural = juce::LookAndFeel_V4::getTooltipBounds(tipText, screenPos, parentArea);
+        const int w = natural.getWidth();
+        const int h = natural.getHeight();
+
+        const int x = parentArea.getRight() - w - 12;
+        const int y = parentArea.getY() + 12;
+
+        return juce::Rectangle<int>(x, y, w, h).constrainedWithin(parentArea);
+    }
+};
+
 class PatternEditorWindow : public juce::DocumentWindow
 {
 public:
@@ -14,13 +41,31 @@ public:
         : DocumentWindow(title, juce::Colour(15, 15, 25), DocumentWindow::closeButton)
     {
         setUsingNativeTitleBar(false);
-        setResizable(false, false);
+        setResizable(true, true);             // allow resize + show corner grip
+        setResizeLimits(800, 500, 3200, 2000);
+
+        // Pin educational tooltips to the top-right corner.
+        tooltipWindow.setLookAndFeel(&tooltipLnF);
+    }
+
+    ~PatternEditorWindow() override
+    {
+        // Drop the LookAndFeel reference before our LnF member destructs
+        // (avoids the Component holding a pointer to dead memory briefly).
+        tooltipWindow.setLookAndFeel(nullptr);
     }
 
     void closeButtonPressed() override
     {
         delete this;
     }
+
+private:
+    // Declaration order matters: tooltipLnF must construct BEFORE tooltipWindow
+    // (so the pointer set in the ctor body is valid) and must destruct AFTER
+    // tooltipWindow (reverse-of-construction = tooltipWindow goes first).
+    TopRightTooltipLookAndFeel tooltipLnF;
+    juce::TooltipWindow        tooltipWindow{ this, 600 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PatternEditorWindow)
 };
@@ -126,6 +171,9 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
         addAndMakeVisible(btn);
     }
 
+    // Select button opens the fighting-game-style voice bank picker.
+    selectModeButton.onClick = [this]() { openVoiceBankSelector(); };
+
     // Metronome button
     metronomeButton.setButtonText("Metro");
     metronomeButton.setColour(juce::TextButton::buttonColourId, juce::Colour(40, 40, 60));
@@ -177,6 +225,11 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
     DBG("Resources dir found: " + resourcesDir.getFullPathName());
     DBG("Dict file exists: " + juce::String(resourcesDir.getChildFile("cmudict.txt").existsAsFile() ? "YES" : "NO"));
     DBG("VoiceBank exists: " + juce::String(resourcesDir.getChildFile("VoiceBank").isDirectory() ? "YES" : "NO"));
+
+    // Remember the VoiceBank root so the character-select overlay and the
+    // hot-swap thread can resolve "Aaron" / "UTAU" subfolders without having
+    // to rediscover the resources path later.
+    voiceBankRoot = resourcesDir.getChildFile("VoiceBank");
 
     // Hook up the audio callback immediately. If the user hits play before the
     // voice bank is loaded, queueLyric will just be a no-op (findBuffer returns
@@ -367,6 +420,19 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
     loadingOverlay.setStatus("Loading voice bank...");
     refreshTransportEnabled();   // disables transport until voice bank is ready
 
+    // Help overlay — hidden by default, toggled on via Help > About VocalNite
+    addChildComponent(helpOverlay);
+    helpOverlay.setAlwaysOnTop(true);
+
+    // Voice bank selector — hidden by default, shown via the toolbar "Select" button.
+    addChildComponent(voiceBankSelectorOverlay);
+    voiceBankSelectorOverlay.setAlwaysOnTop(true);
+    voiceBankSelectorOverlay.onBankSelected = [this](juce::String id)
+        {
+            if (!isDying.load())
+                onVoiceBankChosen(id);
+        };
+
     setSize(1280, 720);
 }
 
@@ -382,6 +448,13 @@ DAWComponent::~DAWComponent()
     {
         resourceLoader->stopThread(5000);  // wait up to 5s
         resourceLoader.reset();
+    }
+
+    // Stop any in-flight voice bank hot-swap too.
+    if (voiceBankSwapThread != nullptr)
+    {
+        voiceBankSwapThread->stopThread(5000);
+        voiceBankSwapThread.reset();
     }
 
     EducationalModeManager::getInstance().removeListener(this);
@@ -713,6 +786,16 @@ void DAWComponent::resized()
     loadingOverlay.setBounds(getLocalBounds());
     if (loadingOverlay.isVisible())
         loadingOverlay.toFront(false);
+
+    // Help overlay also spans the full area when visible
+    helpOverlay.setBounds(getLocalBounds());
+    if (helpOverlay.isVisible())
+        helpOverlay.toFront(false);
+
+    // Voice-bank selector overlay spans the full area when visible
+    voiceBankSelectorOverlay.setBounds(getLocalBounds());
+    if (voiceBankSelectorOverlay.isVisible())
+        voiceBankSelectorOverlay.toFront(false);
 }
 
 juce::StringArray DAWComponent::getMenuBarNames()
@@ -756,7 +839,7 @@ juce::PopupMenu DAWComponent::getMenuForIndex(int menuIndex, const juce::String&
     }
     else if (menuIndex == 6) // Help
     {
-        menu.addItem(14, "About VocalNite");
+        menu.addItem(15, "About VocalNite");
     }
     return menu;
 }
@@ -848,6 +931,10 @@ void DAWComponent::menuItemSelected(int menuItemID, int)
     case 14: // Export As
         break;
 
+    case 15: // About / Help
+        showHelpDialog();
+        break;
+
     default:
         break;
     }
@@ -876,12 +963,13 @@ void DAWComponent::addTrack()
 {
     juce::String newName = "Track " + juce::String(trackNames.size() + 1);
     trackNames.add(newName);
-    saveTrack(newName, trackNames.size() - 1);
+    saveTrack(newName, trackNames.size() - 1);   // saveTrack appends to trackIds
 
     Action action;
     action.type = Action::AddTrack;
     action.trackName = newName;
     action.trackIndex = trackNames.size() - 1;
+    action.trackId = trackIds.getLast();
     undoStack.add(action);
     redoStack.clear();
     if (undoStack.size() > 10) undoStack.remove(0);
@@ -900,6 +988,7 @@ void DAWComponent::removeTrack(int index)
         action.type = Action::RemoveTrack;
         action.trackName = trackNames[index];
         action.trackIndex = index;
+        action.trackId = (index < trackIds.size()) ? trackIds[index] : -1;
         undoStack.add(action);
         redoStack.clear();
         if (undoStack.size() > 10) undoStack.remove(0);
@@ -1024,7 +1113,43 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
                                 return;
                             }
 
-                            // Delete from database
+                            Action action;
+                            action.type = Action::RemovePattern;
+                            action.patternName = patternNames[i];
+                            action.patternId = patternIds[i];
+                            action.patternIndex = i;
+
+                            // Capture all PatternNotes before DB cascade wipes them
+                            if (i < patternIds.size() && patternIds[i] >= 0)
+                            {
+                                std::string patternIdStr = std::to_string(patternIds[i]);
+                                const char* noteParams[1] = { patternIdStr.c_str() };
+                                PGresult* notesRes = PQexecParams(DatabaseManager::get().db(),
+                                    "SELECT pitch, beat, lyric, duration FROM PatternNotes WHERE pattern_id = $1",
+                                    1, nullptr, noteParams, nullptr, nullptr, 0);
+                                if (PQresultStatus(notesRes) == PGRES_TUPLES_OK)
+                                {
+                                    int n = PQntuples(notesRes);
+                                    for (int row = 0; row < n; ++row)
+                                    {
+                                        Action::SavedNote sn;
+                                        sn.pitch = std::stoi(PQgetvalue(notesRes, row, 0));
+                                        sn.beat = std::stoi(PQgetvalue(notesRes, row, 1));
+                                        sn.lyric = juce::String(PQgetvalue(notesRes, row, 2));
+                                        sn.duration = std::max(1, std::stoi(PQgetvalue(notesRes, row, 3)));
+                                        action.savedNotes.add(sn);
+                                    }
+                                }
+                                PQclear(notesRes);
+                            }
+
+                            // Capture placed clips referencing this pattern (they'll be
+                            // cascaded out of PlacedClips when we delete the pattern).
+                            for (int c = placedClips.size() - 1; c >= 0; --c)
+                                if (placedClips[c].patternIndex == i)
+                                    action.orphanedClips.add(placedClips[c]);
+
+                            // Delete pattern row (DB cascade wipes PatternNotes + PlacedClips)
                             if (i < patternIds.size() && patternIds[i] >= 0)
                             {
                                 try
@@ -1043,14 +1168,19 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
                                     DBG("Pattern delete error: " + juce::String(e.what()));
                                 }
                             }
-                            Action action;
-                            action.type = Action::RemovePattern;
-                            action.patternName = patternNames[i];
-                            action.patternId = patternIds[i];
-                            action.patternIndex = i;
+
                             undoStack.add(action);
                             redoStack.clear();
                             if (undoStack.size() > 10) undoStack.remove(0);
+
+                            // Drop clips that referenced this pattern, shift later clips' patternIndex down
+                            for (int c = placedClips.size() - 1; c >= 0; --c)
+                            {
+                                if (placedClips[c].patternIndex == i)
+                                    placedClips.remove(c);
+                                else if (placedClips[c].patternIndex > i)
+                                    placedClips.getReference(c).patternIndex--;
+                            }
 
                             patternNames.remove(i);
                             patternIds.remove(i);
@@ -1482,12 +1612,12 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
                 clip.trackIndex = i;
                 clip.startBeat = beat;
                 clip.duration = newClipDuration;
-                saveClip(clip);
-                placedClips.add(clip);
+                saveClip(clip);                 // populates clip.clipId
+                placedClips.add(clip);          // now stored with valid DB id
 
                 Action action;
                 action.type = Action::AddClip;
-                action.clip = clip;
+                action.clip = clip;             // includes clipId for undo/redo
                 action.clipIndex = placedClips.size() - 1;
                 undoStack.add(action);
                 redoStack.clear();
@@ -1555,9 +1685,14 @@ void DAWComponent::performUndo()
     Action action = undoStack.getLast();
     undoStack.removeLast();
 
+    bool needsPatternReload = false;
+
     switch (action.type)
     {
     case Action::AddPattern:
+    {
+        // Delete the row we added. Stored pattern_id goes stale; redo will
+        // insert a fresh row and capture the new id.
         if (action.patternId >= 0)
         {
             std::string idStr = std::to_string(action.patternId);
@@ -1567,50 +1702,178 @@ void DAWComponent::performUndo()
                 1, nullptr, params, nullptr, nullptr, 0);
             PQclear(res);
         }
+
+        // Shift later clips' patternIndex down (should be none for a freshly-
+        // added pattern, but defensive against weird sequences).
+        for (int c = placedClips.size() - 1; c >= 0; --c)
+        {
+            if (placedClips[c].patternIndex == action.patternIndex)
+                placedClips.remove(c);
+            else if (placedClips[c].patternIndex > action.patternIndex)
+                placedClips.getReference(c).patternIndex--;
+        }
+
         patternNames.remove(action.patternIndex);
         patternIds.remove(action.patternIndex);
+        needsPatternReload = true;
         break;
+    }
 
     case Action::RemovePattern:
-        patternNames.insert(action.patternIndex, action.patternName);
-        patternIds.insert(action.patternIndex, action.patternId);
-        if (action.patternId >= 0)
+    {
+        // Re-insert pattern row (new id), its notes, and orphaned clips.
+        int restoredPatternId = -1;
+        if (currentProjectId >= 0)
         {
-            std::string idStr = std::to_string(action.patternId);
             std::string projectIdStr = std::to_string(currentProjectId);
-            const char* params[3] = { idStr.c_str(), projectIdStr.c_str(), action.patternName.toRawUTF8() };
+            const char* params[2] = { projectIdStr.c_str(), action.patternName.toRawUTF8() };
             PGresult* res = PQexecParams(DatabaseManager::get().db(),
-                "INSERT INTO Patterns (pattern_id, project_id, name) VALUES ($1, $2, $3)",
-                3, nullptr, params, nullptr, nullptr, 0);
+                "INSERT INTO Patterns (project_id, name) VALUES ($1, $2) RETURNING pattern_id",
+                2, nullptr, params, nullptr, nullptr, 0);
+            if (PQresultStatus(res) == PGRES_TUPLES_OK)
+                restoredPatternId = std::stoi(PQgetvalue(res, 0, 0));
+            else
+                DBG("Pattern restore error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
             PQclear(res);
+        }
+
+        // Shift later clip patternIndices UP to make room
+        for (auto& c : placedClips)
+            if (c.patternIndex >= action.patternIndex)
+                c.patternIndex++;
+
+        patternNames.insert(action.patternIndex, action.patternName);
+        patternIds.insert(action.patternIndex, restoredPatternId);
+
+        // Re-insert PatternNotes
+        if (restoredPatternId >= 0)
+        {
+            std::string pidStr = std::to_string(restoredPatternId);
+            for (const auto& n : action.savedNotes)
+            {
+                std::string pitchStr = std::to_string(n.pitch);
+                std::string beatStr = std::to_string(n.beat);
+                std::string durStr = std::to_string(n.duration);
+                const char* np[5] = { pidStr.c_str(), pitchStr.c_str(), beatStr.c_str(),
+                                      n.lyric.toRawUTF8(), durStr.c_str() };
+                PGresult* nr = PQexecParams(DatabaseManager::get().db(),
+                    "INSERT INTO PatternNotes (pattern_id, pitch, beat, lyric, duration) "
+                    "VALUES ($1, $2, $3, $4, $5)",
+                    5, nullptr, np, nullptr, nullptr, 0);
+                if (PQresultStatus(nr) != PGRES_COMMAND_OK)
+                    DBG("Note restore error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+                PQclear(nr);
+            }
+        }
+
+        // Re-insert orphaned clips (memory + DB). They carry their old
+        // patternIndex which is exactly where we just inserted the pattern.
+        const int firstNewClipIndex = placedClips.size();
+        for (auto clip : action.orphanedClips)   // copy so saveClip can mutate id
+        {
+            saveClip(clip);
+            placedClips.add(clip);
+        }
+
+        // Patch the Action's stored patternId + orphaned clip ids so the next
+        // redo targets the new DB rows (originals are gone).
+        action.patternId = restoredPatternId;
+        for (int k = 0; k < action.orphanedClips.size(); ++k)
+        {
+            const int memIndex = firstNewClipIndex + k;
+            if (memIndex < placedClips.size())
+                action.orphanedClips.getReference(k).clipId = placedClips[memIndex].clipId;
+        }
+
+        needsPatternReload = true;
+        break;
+    }
+
+    case Action::AddClip:
+        // Delete from DB + memory
+        if (action.clipIndex >= 0 && action.clipIndex < placedClips.size())
+        {
+            deleteClip(placedClips[action.clipIndex].clipId);
+            placedClips.remove(action.clipIndex);
         }
         break;
 
-    case Action::AddClip:
-        placedClips.remove(action.clipIndex);
-        break;
-
     case Action::RemoveClip:
-        placedClips.insert(action.clipIndex, action.clip);
+    {
+        // Re-insert into DB (new id) + memory
+        PlacedClip c = action.clip;
+        saveClip(c);                           // populates new clipId
+        placedClips.insert(action.clipIndex, c);
+        action.clip = c;                        // patch so redo knows the new id
         break;
+    }
 
     case Action::MoveClip:
-        placedClips.getReference(action.clipIndex) = action.previousClip;
+        if (action.clipIndex >= 0 && action.clipIndex < placedClips.size())
+        {
+            // previousClip carries the old position; preserve the current
+            // clipId (already correct) before overwriting.
+            int keepId = placedClips[action.clipIndex].clipId;
+            placedClips.getReference(action.clipIndex) = action.previousClip;
+            placedClips.getReference(action.clipIndex).clipId = keepId;
+            updateClip(placedClips[action.clipIndex]);
+        }
         break;
 
     case Action::AddTrack:
-        trackNames.remove(action.trackIndex);
+        // Delete the DB row for this track, drop from memory.
+        if (action.trackIndex >= 0 && action.trackIndex < trackIds.size())
+        {
+            deleteTrackFromDB(trackIds[action.trackIndex]);
+            trackIds.remove(action.trackIndex);
+        }
+        if (action.trackIndex >= 0 && action.trackIndex < trackNames.size())
+            trackNames.remove(action.trackIndex);
+        {
+            int totalHeight = trackNames.size() * trackHeight;
+            trackScrollBar.setRangeLimits(0.0, totalHeight);
+        }
         break;
 
     case Action::RemoveTrack:
+    {
+        // Re-insert into DB (new id) and back into memory at original index.
+        int newTrackId = -1;
+        if (currentProjectId >= 0)
+        {
+            std::string projectIdStr = std::to_string(currentProjectId);
+            std::string orderIndexStr = std::to_string(action.trackIndex);
+            const char* params[3] = { projectIdStr.c_str(),
+                                      action.trackName.toRawUTF8(),
+                                      orderIndexStr.c_str() };
+            PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                "INSERT INTO Tracks (project_id, name, type, order_index) VALUES ($1, $2, 'vocal', $3) RETURNING track_id",
+                3, nullptr, params, nullptr, nullptr, 0);
+            if (PQresultStatus(res) == PGRES_TUPLES_OK)
+                newTrackId = std::stoi(PQgetvalue(res, 0, 0));
+            else
+                DBG("Track restore error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+            PQclear(res);
+        }
+
         trackNames.insert(action.trackIndex, action.trackName);
+        trackIds.insert(action.trackIndex, newTrackId);
+        action.trackId = newTrackId;
+
+        int totalHeight = trackNames.size() * trackHeight;
+        trackScrollBar.setRangeLimits(0.0, totalHeight);
         break;
     }
-    redoStack.add(action);
-    if (undoStack.size() > 10)
-        undoStack.remove(0);
+    }
 
-    loadFullPatternNotes();
+    redoStack.add(action);
+    if (redoStack.size() > 10) redoStack.remove(0);
+
+    if (needsPatternReload)
+    {
+        loadPatternNotes();
+        loadFullPatternNotes();
+    }
     repaint();
     resized();
 }
@@ -1622,41 +1885,144 @@ void DAWComponent::performRedo()
     Action action = redoStack.getLast();
     redoStack.removeLast();
 
+    bool needsPatternReload = false;
+
     switch (action.type)
     {
     case Action::AddPattern:
+    {
+        // Re-insert pattern row into DB (new id), memory, parallel arrays.
+        int newPatternId = -1;
+        if (currentProjectId >= 0)
+        {
+            std::string projectIdStr = std::to_string(currentProjectId);
+            const char* params[2] = { projectIdStr.c_str(), action.patternName.toRawUTF8() };
+            PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                "INSERT INTO Patterns (project_id, name) VALUES ($1, $2) RETURNING pattern_id",
+                2, nullptr, params, nullptr, nullptr, 0);
+            if (PQresultStatus(res) == PGRES_TUPLES_OK)
+                newPatternId = std::stoi(PQgetvalue(res, 0, 0));
+            PQclear(res);
+        }
+
+        // Shift later clip patternIndices up
+        for (auto& c : placedClips)
+            if (c.patternIndex >= action.patternIndex)
+                c.patternIndex++;
+
         patternNames.insert(action.patternIndex, action.patternName);
-        patternIds.insert(action.patternIndex, action.patternId);
+        patternIds.insert(action.patternIndex, newPatternId);
+        action.patternId = newPatternId;
+        needsPatternReload = true;
         break;
+    }
 
     case Action::RemovePattern:
+    {
+        // Delete pattern row (DB cascade handles notes + clips). Drop orphaned
+        // clips from memory, shift later clip patternIndices down.
+        if (action.patternIndex >= 0 && action.patternIndex < patternIds.size()
+            && patternIds[action.patternIndex] >= 0)
+        {
+            std::string idStr = std::to_string(patternIds[action.patternIndex]);
+            const char* params[1] = { idStr.c_str() };
+            PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                "DELETE FROM Patterns WHERE pattern_id = $1",
+                1, nullptr, params, nullptr, nullptr, 0);
+            PQclear(res);
+        }
+
+        for (int c = placedClips.size() - 1; c >= 0; --c)
+        {
+            if (placedClips[c].patternIndex == action.patternIndex)
+                placedClips.remove(c);
+            else if (placedClips[c].patternIndex > action.patternIndex)
+                placedClips.getReference(c).patternIndex--;
+        }
+
         patternNames.remove(action.patternIndex);
         patternIds.remove(action.patternIndex);
+        needsPatternReload = true;
         break;
+    }
 
     case Action::AddClip:
-        placedClips.insert(action.clipIndex, action.clip);
+    {
+        // Re-insert the clip (new id) into DB + memory at original index.
+        PlacedClip c = action.clip;
+        saveClip(c);
+        placedClips.insert(action.clipIndex, c);
+        action.clip = c;
         break;
+    }
 
     case Action::RemoveClip:
-        placedClips.remove(action.clipIndex);
+        if (action.clipIndex >= 0 && action.clipIndex < placedClips.size())
+        {
+            deleteClip(placedClips[action.clipIndex].clipId);
+            placedClips.remove(action.clipIndex);
+        }
         break;
 
     case Action::MoveClip:
-        placedClips.getReference(action.clipIndex) = action.clip;
+        if (action.clipIndex >= 0 && action.clipIndex < placedClips.size())
+        {
+            int keepId = placedClips[action.clipIndex].clipId;
+            placedClips.getReference(action.clipIndex) = action.clip;
+            placedClips.getReference(action.clipIndex).clipId = keepId;
+            updateClip(placedClips[action.clipIndex]);
+        }
         break;
 
     case Action::AddTrack:
+    {
+        int newTrackId = -1;
+        if (currentProjectId >= 0)
+        {
+            std::string projectIdStr = std::to_string(currentProjectId);
+            std::string orderIndexStr = std::to_string(action.trackIndex);
+            const char* params[3] = { projectIdStr.c_str(),
+                                      action.trackName.toRawUTF8(),
+                                      orderIndexStr.c_str() };
+            PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                "INSERT INTO Tracks (project_id, name, type, order_index) VALUES ($1, $2, 'vocal', $3) RETURNING track_id",
+                3, nullptr, params, nullptr, nullptr, 0);
+            if (PQresultStatus(res) == PGRES_TUPLES_OK)
+                newTrackId = std::stoi(PQgetvalue(res, 0, 0));
+            PQclear(res);
+        }
         trackNames.insert(action.trackIndex, action.trackName);
+        trackIds.insert(action.trackIndex, newTrackId);
+        action.trackId = newTrackId;
+
+        int totalHeight = trackNames.size() * trackHeight;
+        trackScrollBar.setRangeLimits(0.0, totalHeight);
         break;
+    }
 
     case Action::RemoveTrack:
-        trackNames.remove(action.trackIndex);
+        if (action.trackIndex >= 0 && action.trackIndex < trackIds.size())
+        {
+            deleteTrackFromDB(trackIds[action.trackIndex]);
+            trackIds.remove(action.trackIndex);
+        }
+        if (action.trackIndex >= 0 && action.trackIndex < trackNames.size())
+            trackNames.remove(action.trackIndex);
+        {
+            int totalHeight = trackNames.size() * trackHeight;
+            trackScrollBar.setRangeLimits(0.0, totalHeight);
+        }
         break;
     }
 
     undoStack.add(action);
-    loadFullPatternNotes();
+    if (undoStack.size() > 10) undoStack.remove(0);
+
+    if (needsPatternReload)
+    {
+        loadPatternNotes();
+        loadFullPatternNotes();
+    }
     repaint();
     resized();
 }
@@ -1775,7 +2141,7 @@ void DAWComponent::loadFullPatternNotes()
             std::string patternIdStr = std::to_string(patternId);
             const char* params[1] = { patternIdStr.c_str() };
             PGresult* res = PQexecParams(DatabaseManager::get().db(),
-                "SELECT pitch, beat, lyric FROM PatternNotes WHERE pattern_id = $1 ORDER BY beat ASC",
+                "SELECT pitch, beat, lyric, duration FROM PatternNotes WHERE pattern_id = $1 ORDER BY beat ASC",
                 1, nullptr, params, nullptr, nullptr, 0);
 
             if (PQresultStatus(res) == PGRES_TUPLES_OK)
@@ -1787,6 +2153,7 @@ void DAWComponent::loadFullPatternNotes()
                     n.pitch = std::stoi(PQgetvalue(res, row, 0));
                     n.beat = std::stoi(PQgetvalue(res, row, 1));
                     n.lyric = juce::String(PQgetvalue(res, row, 2));
+                    n.duration = std::max(1, std::stoi(PQgetvalue(res, row, 3)));
                     notes.add(n);
                 }
             }
@@ -1816,12 +2183,14 @@ void DAWComponent::triggerNotesAtBeat(int globalBeat)
         for (const auto& note : patternFullNotes.getReference(pIdx))
         {
             if (note.beat == localBeat && note.lyric.isNotEmpty())
-                vocalSynth.queueLyric(note.lyric, note.pitch, (double)currentBPM);
+                vocalSynth.queueLyric(note.lyric, note.pitch,
+                    (double)currentBPM,
+                    (double)note.duration);
         }
     }
 }
 
-void DAWComponent::saveClip(const PlacedClip& clip)
+void DAWComponent::saveClip(PlacedClip& clip)
 {
     if (currentProjectId < 0 || clip.patternIndex >= patternIds.size()) return;
 
@@ -1846,9 +2215,14 @@ void DAWComponent::saveClip(const PlacedClip& clip)
         5, nullptr, params, nullptr, nullptr, 0);
 
     if (PQresultStatus(res) == PGRES_TUPLES_OK)
-        DBG("Clip saved with ID: " + juce::String(std::stoi(PQgetvalue(res, 0, 0))));
+    {
+        clip.clipId = std::stoi(PQgetvalue(res, 0, 0));
+        DBG("Clip saved with ID: " + juce::String(clip.clipId));
+    }
     else
+    {
         DBG("Clip save error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+    }
 
     PQclear(res);
 }
@@ -2079,7 +2453,7 @@ void DAWComponent::updateTooltips(bool eduEnabled)
     // Mode buttons (no specific registry entries; generic fallback)
     selectModeButton.setTooltip(eduEnabled
         ? juce::String(juce::CharPointer_UTF8(
-            "SELECT MODE: Click to select patterns and clips without editing them."))
+            "CHOOSE YOUR VOICE: Open the voice-bank selector to switch between Aaron, UTAU, and more."))
         : juce::String{});
     editModeButton.setTooltip(eduEnabled
         ? juce::String(juce::CharPointer_UTF8(
@@ -2241,7 +2615,9 @@ void DAWComponent::ResourceLoader::run()
     // Stage 2: voice bank (slow — ~3400 WAV files, several seconds).
     if (!threadShouldExit())
     {
-        auto bankDir = resourcesDir.getChildFile("VoiceBank");
+        // The Aaron bank is the initial default. UTAU (and any others) can be
+        // hot-swapped in later via DAWComponent::openVoiceBankSelector().
+        auto bankDir = resourcesDir.getChildFile("VoiceBank").getChildFile("Aaron");
         owner.vocalSynth.loadVoiceBank(bankDir);
 
         juce::MessageManager::callAsync([ownerPtr = &owner]()
@@ -2355,4 +2731,373 @@ void DAWComponent::LoadingOverlay::paint(juce::Graphics& g)
         g.setColour(juce::Colours::hotpink.withAlpha(alpha));
         g.fillEllipse(centre + (i - 1) * spacing - 4.0f, dotY, 8.0f, 8.0f);
     }
+}
+// ============================================================================
+//  Help dialog — now an in-component overlay (no AlertWindow, instant show)
+// ============================================================================
+
+void DAWComponent::showHelpDialog()
+{
+    // Toggle the in-component overlay. Because helpOverlay is already a child
+    // of this DAWComponent and fully constructed in our ctor, there's zero
+    // system-window creation latency here - setVisible(true) just flips a
+    // flag and triggers a repaint.
+    helpOverlay.setBounds(getLocalBounds());
+    helpOverlay.setVisible(true);
+    helpOverlay.toFront(true);
+}
+
+// ============================================================================
+//  HelpOverlay implementation
+// ============================================================================
+
+DAWComponent::HelpOverlay::HelpOverlay()
+{
+    // Intercept clicks on the backdrop so underlying DAW UI can't be touched
+    // while help is open. allowClicksOnChildComponents = true so the Close
+    // button and TextEditor still work.
+    setInterceptsMouseClicks(true, true);
+
+    titleLabel.setText("VocalNite Help", juce::dontSendNotification);
+    titleLabel.setFont(juce::Font(22.0f, juce::Font::bold));
+    titleLabel.setColour(juce::Label::textColourId, juce::Colours::hotpink);
+    titleLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(titleLabel);
+
+    closeButton.setButtonText("X");
+    closeButton.setColour(juce::TextButton::buttonColourId, juce::Colour(50, 20, 80));
+    closeButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(80, 30, 120));
+    closeButton.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    closeButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    closeButton.onClick = [this]() { setVisible(false); };
+    addAndMakeVisible(closeButton);
+
+    body.setReadOnly(true);
+    body.setMultiLine(true, false);
+    body.setScrollbarsShown(true);
+    body.setCaretVisible(false);
+    body.setPopupMenuEnabled(false);
+    body.setColour(juce::TextEditor::backgroundColourId, juce::Colour(20, 15, 35));
+    body.setColour(juce::TextEditor::textColourId, juce::Colours::white);
+    body.setColour(juce::TextEditor::outlineColourId, juce::Colours::hotpink.withAlpha(0.35f));
+    body.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::hotpink.withAlpha(0.6f));
+    body.setColour(juce::TextEditor::highlightColourId, juce::Colours::hotpink.withAlpha(0.3f));
+    body.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::plain));
+    body.setText(getHelpBody(), juce::dontSendNotification);
+    addAndMakeVisible(body);
+}
+
+juce::Rectangle<int> DAWComponent::HelpOverlay::getCardBounds() const
+{
+    // Card sits centered, capped so it doesn't get silly on large windows
+    const int w = juce::jmin(720, getWidth() - 80);
+    const int h = juce::jmin(560, getHeight() - 60);
+    return juce::Rectangle<int>((getWidth() - w) / 2,
+        (getHeight() - h) / 2,
+        w, h);
+}
+
+void DAWComponent::HelpOverlay::paint(juce::Graphics& g)
+{
+    // Dim backdrop (click anywhere outside the card to dismiss)
+    g.fillAll(juce::Colour(0, 0, 0).withAlpha(0.55f));
+
+    auto card = getCardBounds().toFloat();
+
+    juce::ColourGradient grad(juce::Colour(35, 25, 55),
+        card.getCentreX(), card.getY(),
+        juce::Colour(20, 15, 35),
+        card.getCentreX(), card.getBottom(), false);
+    g.setGradientFill(grad);
+    g.fillRoundedRectangle(card, 12.0f);
+
+    g.setColour(juce::Colours::hotpink.withAlpha(0.6f));
+    g.drawRoundedRectangle(card, 12.0f, 1.5f);
+
+    // Header divider under the title
+    const float divY = card.getY() + 52.0f;
+    g.setColour(juce::Colours::hotpink.withAlpha(0.25f));
+    g.drawLine(card.getX() + 14.0f, divY, card.getRight() - 14.0f, divY, 1.0f);
+}
+
+void DAWComponent::HelpOverlay::resized()
+{
+    auto card = getCardBounds();
+    auto header = card.removeFromTop(52);
+    closeButton.setBounds(header.removeFromRight(44).withSizeKeepingCentre(28, 28));
+    titleLabel.setBounds(header.reduced(18, 0));
+    body.setBounds(card.reduced(14, 10));
+}
+
+void DAWComponent::HelpOverlay::mouseDown(const juce::MouseEvent& e)
+{
+    // Click on the dimmed backdrop (outside the card) dismisses the overlay.
+    if (!getCardBounds().contains(e.getPosition()))
+        setVisible(false);
+}
+
+bool DAWComponent::HelpOverlay::keyPressed(const juce::KeyPress& key)
+{
+    if (key == juce::KeyPress::escapeKey)
+    {
+        setVisible(false);
+        return true;
+    }
+    return false;
+}
+
+void DAWComponent::HelpOverlay::visibilityChanged()
+{
+    if (isVisible())
+    {
+        // Grab focus so Esc works even if the user hasn't clicked anything yet
+        setWantsKeyboardFocus(true);
+        grabKeyboardFocus();
+    }
+}
+
+juce::String DAWComponent::HelpOverlay::getHelpBody()
+{
+    return
+        "VocalNite - Concatenative Vocal Synthesis DAW\n"
+        "================================================\n\n"
+        "Playback\n"
+        "--------\n"
+        "  Play      - start/resume playback (press again to pause)\n"
+        "  Pause     - freeze playback; voices resume mid-sample on Play\n"
+        "  Stop      - reset playhead to beat 0, wipe active voices\n"
+        "  Metronome - toggle click on/off; accented downbeat each bar\n\n"
+        "Patterns\n"
+        "--------\n"
+        "  New pattern       - use the '+' button in the pattern browser (left side)\n"
+        "  Open piano roll   - double-click a pattern\n"
+        "  Right-click       - rename, duplicate, or delete\n"
+        "  Duplicate         - copies all notes into a new pattern\n"
+        "  Delete            - removes pattern + every placed clip using it (undoable)\n\n"
+        "Arrangement\n"
+        "-----------\n"
+        "  Drag pattern onto a track row to create a clip\n"
+        "  Drag a clip horizontally to move it; clips snap to beat grid\n"
+        "  Hold Shift while dragging for free (unsnapped) placement\n"
+        "  Drag a clip back into the pattern browser to delete it\n"
+        "  Clip duration auto-sizes from its pattern's note content\n\n"
+        "Piano roll (inside a pattern)\n"
+        "-----------------------------\n"
+        "  Left-click empty cell  - place a note + open lyric editor\n"
+        "  Left-click existing    - edit its lyric\n"
+        "  Drag right edge        - stretch note duration (held longer when sung)\n"
+        "  Right-click            - delete note\n"
+        "  Enter                  - save lyric\n"
+        "  Escape                 - discard lyric / cancel\n"
+        "  Click outside editor   - cancels the edit (no new note created)\n"
+        "  Click a different note - saves current, opens editor on the new one\n"
+        "  Mouse wheel            - scroll vertically\n"
+        "  Shift + wheel          - scroll horizontally\n\n"
+        "Long notes (stretch feature)\n"
+        "----------------------------\n"
+        "  Drag a note's right edge to make it multi-beat. Consonants are sung\n"
+        "  at natural speech rate; the final vowel is held for the extra time\n"
+        "  with a gentle fade at the end, so 'hello' stretched to 4 beats sounds\n"
+        "  like h-e-l-OOOOOooo rather than a slowed-down 'hello'.\n\n"
+        "Edit / undo\n"
+        "-----------\n"
+        "  Ctrl+Z / Edit > Undo - up to 10 steps of undo for:\n"
+        "    - adding or removing a pattern (restores notes on remove-undo)\n"
+        "    - adding, removing, or moving a clip\n"
+        "    - adding or removing a track\n"
+        "  Ctrl+Y / Edit > Redo - replays the undone action\n\n"
+        "Educational mode\n"
+        "----------------\n"
+        "  Only visible for verified .edu users (ProjectManager toggle).\n"
+        "  When on:\n"
+        "    - cyan highlights pulse on transport actions\n"
+        "    - tooltips appear on every control (hover ~600ms)\n"
+        "    - inside the piano roll, tooltips are pinned to the top-right\n"
+        "    - Synthesis Inspector button opens a phoneme breakdown per word\n"
+        "      across an entire pattern's lyric content\n\n"
+        "Voice bank & phonemes\n"
+        "---------------------\n"
+        "  Uses the CMU Pronouncing Dictionary + ARPAsing-format WAV samples\n"
+        "  organised by phoneme and pitch (A3, C4, F4 folders). The engine\n"
+        "  prefers diphones (PREV-CUR) over solo phonemes for smoother\n"
+        "  transitions, with equal-power crossfades between slots.\n\n"
+        "Tips\n"
+        "----\n"
+        "  - If playback is silent, confirm voice bank loaded (transport\n"
+        "    buttons un-dim once the overlay disappears)\n"
+        "  - Unknown words (not in the dictionary) are skipped silently\n"
+        "  - For best results, use simple English words in lyrics\n\n"
+        "Press Esc or click outside this panel to close.\n";
+}
+
+// ============================================================================
+//  Voice-bank character select (fighting-game-style picker + hot swap)
+// ============================================================================
+
+juce::Array<VoiceBankSelectorOverlay::BankInfo>
+DAWComponent::discoverAvailableBanks() const
+{
+    juce::Array<VoiceBankSelectorOverlay::BankInfo> banks;
+
+    // Does this folder contain at least one pitch subfolder (A3, C4, F4, ...)?
+    auto hasPitchFolders = [](const juce::File& dir) -> bool
+        {
+            if (!dir.isDirectory()) return false;
+            for (juce::DirectoryEntry e : juce::RangedDirectoryIterator(dir, false, "*", juce::File::findDirectories))
+            {
+                juce::ignoreUnused(e);
+                return true;   // any subfolder counts; loadVoiceBank filters further
+            }
+            return false;
+        };
+
+    // Look for a portrait image inside the character's folder. Supported
+    // filenames: portrait.png, portrait.jpg, portrait.jpeg (checked in order).
+    // Returns an invalid juce::File if none exist.
+    auto findPortrait = [](const juce::File& dir) -> juce::File
+        {
+            if (!dir.isDirectory()) return {};
+            static const char* const names[] = { "portrait.png", "portrait.jpg", "portrait.jpeg" };
+            for (const char* n : names)
+            {
+                juce::File f = dir.getChildFile(n);
+                if (f.existsAsFile()) return f;
+            }
+            return {};
+        };
+
+    // Aaron — always listed when the folder exists (empty-content still counts
+    // as "present" since it's our canonical default; UTAU is held to a stricter
+    // bar because we hide it entirely when not populated).
+    auto aaronFolder = voiceBankRoot.getChildFile("Aaron");
+    if (aaronFolder.isDirectory())
+    {
+        VoiceBankSelectorOverlay::BankInfo aaron;
+        aaron.id = "aaron";
+        aaron.displayName = "Aaron";
+        aaron.description = juce::String(juce::CharPointer_UTF8(
+            "The Almighty Aaron..."));
+        aaron.initial = "A";
+        aaron.themeColour = juce::Colours::hotpink;
+        aaron.bankFolder = aaronFolder;
+        aaron.portraitFile = findPortrait(aaronFolder);
+        banks.add(aaron);
+    }
+
+    // UTAU — hidden unless the folder actually contains pitch subfolders.
+    auto utauFolder = voiceBankRoot.getChildFile("UTAU");
+    if (hasPitchFolders(utauFolder))
+    {
+        VoiceBankSelectorOverlay::BankInfo utau;
+        utau.id = "utau";
+        utau.displayName = "UTAU";
+        utau.description = juce::String(juce::CharPointer_UTF8(
+            "Ready to Speak!"));
+        utau.initial = "U";
+        utau.themeColour = juce::Colour(0, 220, 255);   // bright cyan
+        utau.bankFolder = utauFolder;
+        utau.portraitFile = findPortrait(utauFolder);
+        banks.add(utau);
+    }
+
+    return banks;
+}
+
+void DAWComponent::openVoiceBankSelector()
+{
+    // Rebuild the list each open — the user may have added a UTAU folder
+    // between sessions without restarting the app.
+    auto banks = discoverAvailableBanks();
+    voiceBankSelectorOverlay.setAvailableBanks(banks, currentVoiceBankId);
+    voiceBankSelectorOverlay.setBounds(getLocalBounds());
+    voiceBankSelectorOverlay.setVisible(true);
+    voiceBankSelectorOverlay.toFront(true);
+}
+
+void DAWComponent::onVoiceBankChosen(const juce::String& bankId)
+{
+    // No-op if user picked the currently-loaded bank (overlay should have
+    // disabled that card's SELECT button already, but guard anyway).
+    if (bankId.isEmpty() || bankId == currentVoiceBankId) return;
+
+    // Resolve folder from the bank id
+    juce::File bankFolder;
+    auto banks = discoverAvailableBanks();
+    for (const auto& b : banks)
+        if (b.id == bankId) { bankFolder = b.bankFolder; break; }
+
+    if (!bankFolder.isDirectory())
+    {
+        DBG("Voice bank folder not found for id: " + bankId);
+        return;
+    }
+
+    // Full transport stop so no queueLyric calls race the swap. We do NOT
+    // auto-resume after the swap — the user will press Play again.
+    if (isPlaying)
+    {
+        isPlaying = false;
+        stopTimer();
+    }
+    playheadPosition = 0.0;
+    lastTriggeredBeat = -1;
+    vocalSynth.setPaused(false);     // unpause so stop() can wipe voices cleanly
+    vocalSynth.stop();
+    vocalSynth.setMetronomeEnabled(false);
+
+    // Gate the UI: transport dims until the new bank is ready.
+    isVocalBankReady.store(false);
+    refreshTransportEnabled();
+
+    // Surface progress via the existing loading overlay.
+    juce::String pretty = bankId.substring(0, 1).toUpperCase() + bankId.substring(1);
+    loadingOverlay.setStatus("Switching to " + pretty + "...");
+    loadingOverlay.setVisible(true);
+    loadingOverlay.toFront(false);
+    repaint();
+
+    // Stop any in-flight swap thread defensively (shouldn't normally happen).
+    if (voiceBankSwapThread != nullptr)
+    {
+        voiceBankSwapThread->stopThread(3000);
+        voiceBankSwapThread.reset();
+    }
+
+    voiceBankSwapThread.reset(new VoiceBankSwapThread(*this, bankFolder, bankId));
+    voiceBankSwapThread->startThread();
+}
+
+void DAWComponent::onVoiceBankSwapFinished(const juce::String& bankId, bool success)
+{
+    if (isDying.load()) return;
+
+    if (success)
+    {
+        currentVoiceBankId = bankId;
+        DBG("Voice bank swap complete: " + bankId);
+    }
+    else
+    {
+        DBG("Voice bank swap FAILED for id: " + bankId);
+    }
+
+    isVocalBankReady.store(true);
+    refreshTransportEnabled();
+    loadingOverlay.setVisible(false);
+    repaint();
+}
+
+void DAWComponent::VoiceBankSwapThread::run()
+{
+    if (threadShouldExit()) return;
+
+    // reloadVoiceBank pauses the audio thread, wipes active + pending voices
+    // under queueLock, repopulates the voiceBank map, then unpauses.
+    const bool ok = owner.vocalSynth.reloadVoiceBank(bankFolder);
+
+    juce::MessageManager::callAsync(
+        [ownerPtr = &owner, id = bankId, ok]()
+        {
+            ownerPtr->onVoiceBankSwapFinished(id, ok);
+        });
 }

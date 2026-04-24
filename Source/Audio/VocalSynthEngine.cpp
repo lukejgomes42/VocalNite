@@ -453,7 +453,8 @@ void VocalSynthEngine::setPaused(bool paused)
 //  queueLyric — BPM drives speech rate
 // ============================================================================
 
-void VocalSynthEngine::queueLyric(const juce::String& lyric, int gridPitch, double bpm)
+void VocalSynthEngine::queueLyric(const juce::String& lyric, int gridPitch,
+    double bpm, double durationBeats)
 {
     juce::StringArray words;
     words.addTokens(lyric.trim(), " ", "");
@@ -472,7 +473,10 @@ void VocalSynthEngine::queueLyric(const juce::String& lyric, int gridPitch, doub
     // One beat's worth of time, derived from BPM
     const double secondsPerBeat = 60.0 / juce::jlimit(30.0, 400.0, bpm);
 
-    Voice v = buildVoice(allPhonemes, noteFolder, secondsPerBeat);
+    // Clamp durationBeats defensively (DB stores it as int >= 1, but be safe)
+    const double safeDuration = juce::jlimit(0.25, 64.0, durationBeats);
+
+    Voice v = buildVoice(allPhonemes, noteFolder, secondsPerBeat, safeDuration);
     v.active = true;
 
     // Randomise vibrato parameters for humanisation
@@ -516,7 +520,8 @@ const juce::AudioBuffer<float>* VocalSynthEngine::findBuffer(
 VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
     const std::vector<std::string>& phonemes,
     const std::string& noteFolder,
-    double secondsPerBeat)
+    double secondsPerBeat,
+    double durationBeats)
 {
     if (phonemes.empty()) return Voice{};
 
@@ -568,7 +573,11 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
             plans.push_back(plan);
     }
 
-    // Try appending a release slot: LAST-xx
+    // Track whether we actually appended a release diphone (LAST-xx).
+    // It matters for picking the sustain slot: we never stretch the release
+    // diphone itself — we stretch the vowel/consonant right before it.
+    const size_t phonemeSlotCount = plans.size();
+
     if (!phonemes.empty())
     {
         std::string releaseKey = phonemes.back() + "-xx";
@@ -586,15 +595,42 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
 
     if (plans.empty()) return Voice{};
 
+    const bool hasReleaseDiphone = plans.size() > phonemeSlotCount;
+
     DBG("buildVoice: " + juce::String((int)phonemes.size()) + " phonemes -> "
         + juce::String(diphoneHits) + " diphones, "
-        + juce::String(soloHits) + " solos");
+        + juce::String(soloHits) + " solos, "
+        + juce::String(durationBeats, 2) + " beats");
 
-    // Compute durations
+    // ---- Sustain target (singer-style note hold) -----------------------------
+    // For durationBeats > 1 we stretch ONE slot to fill the extra time:
+    //   1st preference: the LAST vowel (before any release diphone)
+    //   2nd preference: the LAST sustained consonant
+    //   3rd preference: the last non-release slot
+    const int searchEnd = hasReleaseDiphone ? (int)plans.size() - 1 : (int)plans.size();
+
+    int sustainIdx = -1;
+    for (int i = searchEnd - 1; i >= 0; --i)
+        if (plans[i].type == PhonemeType::Vowel) { sustainIdx = i; break; }
+
+    if (sustainIdx < 0)
+        for (int i = searchEnd - 1; i >= 0; --i)
+            if (plans[i].type == PhonemeType::SustainedConsonant) { sustainIdx = i; break; }
+
+    if (sustainIdx < 0)
+        sustainIdx = searchEnd - 1;  // last resort: whatever the tail phoneme is
+
+    // ---- Sample-budget math --------------------------------------------------
+    // Normal speech for the phonemes fits in 1 beat. Extra time beyond 1 beat
+    // goes entirely into the sustain slot so consonants keep their natural
+    // speech rate.
     float totalWeight = 0.0f;
     for (auto& p : plans) totalWeight += p.weight;
 
-    const int totalSamples = (int)(secondsPerBeat * currentSampleRate);
+    const int oneBeatSamples = (int)(secondsPerBeat * currentSampleRate);
+    const double extraBeats = std::max(0.0, durationBeats - 1.0);
+    const int extraSustainSamples = (int)(extraBeats * secondsPerBeat * currentSampleRate);
+
     std::uniform_real_distribution<float> jitterDist(0.92f, 1.08f);
 
     Voice v;
@@ -602,27 +638,36 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
     {
         auto& p = plans[pi];
 
-        int slotLen = (int)((p.weight / totalWeight) * totalSamples);
+        int slotLen = (int)((p.weight / totalWeight) * oneBeatSamples);
         slotLen = (int)(slotLen * jitterDist(rng));
 
         int minLen = phonemeMinSamples(p.type, currentSampleRate);
         slotLen = std::max(slotLen, minLen);
 
-        bool isLast = (pi == plans.size() - 1);
+        const bool isLast = (pi == plans.size() - 1);
+        const bool isSustain = ((int)pi == sustainIdx) && extraSustainSamples > 0;
 
         PhonemeSlot slot;
         slot.buffer = p.buffer;
         slot.type = p.type;
-        slot.isLast = isLast;
 
-        if (isLast && p.type != PhonemeType::StopConsonant)
+        if (isSustain)
         {
-            // Last slot plays its full buffer once
+            // Singer-style hold: loop this slot for the extended duration.
+            // Force loop mode by clearing isLast — renderVoice keys off that.
+            slot.slotLength = slotLen + extraSustainSamples;
+            slot.isLast = false;
+        }
+        else if (isLast && p.type != PhonemeType::StopConsonant)
+        {
+            // Original behavior: tail slot plays its full buffer once (one-shot)
             slot.slotLength = p.buffer->getNumSamples();
+            slot.isLast = true;
         }
         else
         {
             slot.slotLength = slotLen;
+            slot.isLast = isLast;
         }
 
         // Envelope: diphones need less attack since transitions are baked in
@@ -650,12 +695,20 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
             }
         }
 
+        // If this sustain slot is the actual tail of the voice (no release
+        // diphone follows), give it a longer, musical fade-out so the held
+        // note doesn't cut abruptly when slotLength is reached.
+        const bool isTailOfVoice = isSustain && (pi == plans.size() - 1);
+        if (isTailOfVoice)
+            slot.releaseLen = (int)(0.080 * currentSampleRate);   // 80 ms
+
         slot.releaseLen = std::min(slot.releaseLen, slot.slotLength / 3);
         slot.attackLen = std::min(slot.attackLen, slot.slotLength / 3);
         slot.releaseStart = slot.slotLength - slot.releaseLen;
 
-        if (isLast)
+        if (slot.isLast)
         {
+            // One-shot slot: no envelope release — readSample does its own fade.
             slot.releaseLen = 0;
             slot.releaseStart = slot.slotLength;
         }
@@ -756,6 +809,44 @@ bool VocalSynthEngine::loadVoiceBank(const juce::File& voiceBankFolder)
     DBG("VocalSynthEngine: loaded " + juce::String(loaded) + " samples from "
         + juce::String((int)availableNoteFolders.size()) + " pitch folders");
     return loaded > 0;
+}
+
+// ============================================================================
+//  reloadVoiceBank  --  thread-safe hot-swap for character select
+// ============================================================================
+//
+//  Thread-safety story:
+//  - The audio thread dereferences PhonemeSlot::buffer pointers that live
+//    inside the voiceBank map. If we clear voiceBank while the audio thread
+//    is reading, we UB.
+//  - setPaused(true) makes getNextAudioBlock return early (no reads). We then
+//    sleep briefly to guarantee any in-flight audio block has finished.
+//  - Under queueLock we wipe activeVoices + pendingVoices so no stale Voice
+//    references will survive into the new bank.
+//  - loadVoiceBank() itself clears voiceBank and repopulates.
+//  - setPaused(false) resumes the audio thread with a fresh voiceBank.
+
+bool VocalSynthEngine::reloadVoiceBank(const juce::File& voiceBankFolder)
+{
+    const bool wasPaused = audioPaused.load();
+    audioPaused.store(true);
+
+    // Give the audio thread up to ~50ms to exit any in-flight block. Typical
+    // audio block at 44.1kHz with 512 samples is ~12ms, so this is plenty.
+    juce::Thread::sleep(50);
+
+    {
+        juce::ScopedLock sl(queueLock);
+        activeVoices.clear();
+        pendingVoices.clear();
+    }
+
+    const bool ok = loadVoiceBank(voiceBankFolder);
+
+    // Restore prior pause state (almost always false at call time, but
+    // if the user had paused playback before swapping we honour that).
+    audioPaused.store(wasPaused);
+    return ok;
 }
 
 // ============================================================================

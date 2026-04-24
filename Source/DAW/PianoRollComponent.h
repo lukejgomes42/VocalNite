@@ -71,5 +71,22 @@ private:
     void loadNotes();
     void applyTooltips(bool eduEnabled);
 
+    // Lyric editor helpers
+    void commitCurrentLyricEdit();                // save typed text, hide editor
+    void discardCurrentLyricEdit();               // hide editor without saving
+    void positionLyricEditorForEditingNote();     // snap editor to current note's screen pos
+    int  findNoteIndexAtMouse(const juce::MouseEvent& e) const;
+
+    // Scroll geometry helpers
+    int  getViewportWidth()  const;   // grid area width  (excludes keys + vscroll)
+    int  getViewportHeight() const;   // grid area height (excludes header + hscroll)
+    double getMaxVerticalOffset()   const;
+    double getMaxHorizontalOffset() const;
+    void   clampOffsetsToViewport();  // re-clamp + push to scrollbars
+    void   centreVerticallyOnMidi(int midi);
+
+    // One-shot: auto-scroll to C4 on first valid resized()
+    bool initialScrollApplied = false;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PianoRollComponent)
 };

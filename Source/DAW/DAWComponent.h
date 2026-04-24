@@ -6,6 +6,7 @@
 #include "../Educational/SynthesisInspector.h"
 #include "../Educational/HighlightOverlay.h"
 #include "../Educational/TooltipRegistry.h"
+#include "../UI/VoiceBankSelectorOverlay.h"
 
 // ──────────────────────────────────────────────────────────────────────────
 //  SynthesisInspectorWindow: floating, non-modal window that hosts the
@@ -154,7 +155,7 @@ private:
     };
     juce::Array<PlacedClip> placedClips;
 
-    void saveClip(const PlacedClip& clip);
+    void saveClip(PlacedClip& clip);       // populates clip.clipId on success
     void deleteClip(int clipId);
     void loadClips();
     void updateClip(const PlacedClip& clip);
@@ -162,6 +163,9 @@ private:
     void saveTrack(const juce::String& trackName, int orderIndex);
     void deleteTrackFromDB(int trackId);
     void loadTracks();
+
+    // Help
+    void showHelpDialog();
 
     // Undo/Redo
     struct Action
@@ -174,6 +178,13 @@ private:
         int patternId = -1;
         int patternIndex = -1;
 
+        // For RemovePattern undo: the PatternNotes rows that were cascaded out,
+        // and the PlacedClips that referenced this pattern. These are re-inserted
+        // so undo fully restores the pattern's content and placements.
+        struct SavedNote { int pitch; int beat; juce::String lyric; int duration; };
+        juce::Array<SavedNote> savedNotes;
+        juce::Array<PlacedClip> orphanedClips;
+
         // Clip data
         PlacedClip clip;
         PlacedClip previousClip;
@@ -182,6 +193,7 @@ private:
         // Track data
         juce::String trackName;
         int trackIndex = -1;
+        int trackId = -1;
     };
 
     juce::Array<Action> undoStack;
@@ -210,6 +222,7 @@ private:
         int pitch;
         int beat;
         juce::String lyric;
+        int duration = 1;   // beats, matches PatternNotes.duration
     };
     juce::Array<juce::Array<FullNote>> patternFullNotes;
 
@@ -294,8 +307,71 @@ private:
     };
     LoadingOverlay loadingOverlay;
 
+    // ── Help overlay ────────────────────────────────────────────────────────
+    //  Themed in-component help panel (replaces the old AlertWindow).
+    //  Shown instantly with no system-window creation overhead. Dismissed
+    //  by the close button, by clicking outside the card, or Esc.
+    class HelpOverlay : public juce::Component
+    {
+    public:
+        HelpOverlay();
+        void paint(juce::Graphics& g) override;
+        void resized() override;
+        void mouseDown(const juce::MouseEvent& e) override;
+        bool keyPressed(const juce::KeyPress& key) override;
+        void visibilityChanged() override;
+    private:
+        juce::Rectangle<int> getCardBounds() const;
+        static juce::String  getHelpBody();
+
+        juce::Label      titleLabel;
+        juce::TextButton closeButton;
+        juce::TextEditor body;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HelpOverlay)
+    };
+    HelpOverlay helpOverlay;
+
     // Enable/disable transport + inspector buttons based on isVocalBankReady
     void refreshTransportEnabled();
+
+    // ── Voice bank selector (fighting-game-style character select) ──────────
+    //
+    //  Owned by DAWComponent. Shown as a full-screen modal child when the
+    //  "Select" toolbar button is pressed. On select, a background thread
+    //  hot-swaps the active voice bank via VocalSynthEngine::reloadVoiceBank.
+    //
+    //  Folder layout on disk:
+    //      Resources/VoiceBank/Aaron/A3/...  Aaron/C4/...  Aaron/F4/...
+    //      Resources/VoiceBank/UTAU/A3/...   UTAU/C4/...   UTAU/F4/...
+    //  Cards for banks whose folders do not exist are hidden.
+    VoiceBankSelectorOverlay voiceBankSelectorOverlay;
+    juce::File               voiceBankRoot;     // Resources/VoiceBank
+    juce::String             currentVoiceBankId = "aaron";
+
+    void openVoiceBankSelector();
+    void onVoiceBankChosen(const juce::String& bankId);
+    void onVoiceBankSwapFinished(const juce::String& bankId, bool success);
+    juce::Array<VoiceBankSelectorOverlay::BankInfo> discoverAvailableBanks() const;
+
+    class VoiceBankSwapThread : public juce::Thread
+    {
+    public:
+        VoiceBankSwapThread(DAWComponent& owner,
+            const juce::File& bankFolder,
+            const juce::String& bankId)
+            : juce::Thread("VocalNite VoiceBank Swap"),
+            owner(owner), bankFolder(bankFolder), bankId(bankId) {
+        }
+
+        void run() override;
+    private:
+        DAWComponent& owner;
+        juce::File    bankFolder;
+        juce::String  bankId;
+    };
+
+    std::unique_ptr<VoiceBankSwapThread> voiceBankSwapThread;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DAWComponent)
 };
