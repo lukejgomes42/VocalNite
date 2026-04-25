@@ -42,6 +42,7 @@ class DAWComponent : public juce::Component,
     public juce::MenuBarModel,
     public juce::ScrollBar::Listener,
     public juce::Timer,
+    public juce::TooltipClient,
     public EducationalModeManager::Listener
 {
 public:
@@ -77,6 +78,12 @@ public:
     // EducationalModeManager::Listener
     void educationalModeChanged(bool isEnabled) override;
 
+    // juce::TooltipClient — supplies dynamic tooltips for hovered areas of
+    // the DAW that aren't standalone components (e.g. patterns drawn into
+    // the browser, clips drawn into the timeline). Static-control tooltips
+    // (buttons, scrollbars) are still set via setTooltip on those components.
+    juce::String getTooltip() override;
+
 private:
     // Menu bar
     juce::MenuBarComponent menuBar;
@@ -108,6 +115,13 @@ private:
     juce::TextEditor patternRenameEditor;
     juce::ScrollBar patternScrollBar{ true };
     double patternScrollOffset = 0.0;
+
+    // Same race-guard pattern as PianoRollComponent's lyric editor: when the
+    // pattern rename editor is hidden mid-flow (e.g. swapping to a new rename
+    // session, or programmatic dismissal), JUCE posts an async focus-loss
+    // that would re-fire commit and clobber the next pattern's name. We
+    // suppress one such event on managed transitions and clear via callAsync.
+    bool suppressNextRenameFocusLost = false;
     juce::ScrollBar horizontalScrollBar{ false };
     double horizontalScrollOffset = 0.0;
     double playheadPosition = 0.0; // in beats
@@ -222,6 +236,12 @@ private:
     juce::String currentUsername;
     juce::Label usernameLabel;
 
+    // User type cached at construction time ("educational" or "normal").
+    // Drives feature gating (e.g. UTAU voice bank is educational-only).
+    // Resolved once via DatabaseManager::getUserType — already safe-downgraded
+    // to "normal" if the user is unverified-edu.
+    juce::String currentUserType = "normal";
+
     // ── Vocal Synthesis ──
     VocalSynthEngine vocalSynth;
     juce::AudioSourcePlayer synthPlayer;
@@ -320,19 +340,27 @@ private:
     //  Themed in-component help panel (replaces the old AlertWindow).
     //  Shown instantly with no system-window creation overhead. Dismissed
     //  by the close button, by clicking outside the card, or Esc.
+    //  Has two modes: Help (instructions reference) and About (project
+    //  description). Switch via setMode before each setVisible(true).
     class HelpOverlay : public juce::Component
     {
     public:
+        enum class Mode { Help, About };
+
         HelpOverlay();
         void paint(juce::Graphics& g) override;
         void resized() override;
         void mouseDown(const juce::MouseEvent& e) override;
         bool keyPressed(const juce::KeyPress& key) override;
         void visibilityChanged() override;
+
+        void setMode(Mode m);
     private:
         juce::Rectangle<int> getCardBounds() const;
         static juce::String  getHelpBody();
+        static juce::String  getAboutBody();
 
+        Mode             currentMode = Mode::Help;
         juce::Label      titleLabel;
         juce::TextButton closeButton;
         juce::TextEditor body;
@@ -340,6 +368,8 @@ private:
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HelpOverlay)
     };
     HelpOverlay helpOverlay;
+
+    void showAboutDialog();
 
     // ── Project Settings overlay ────────────────────────────────────────────
     //  Themed card matching HelpOverlay. Hosts project-wide controls:

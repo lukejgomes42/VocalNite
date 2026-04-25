@@ -26,18 +26,26 @@ PianoRollComponent::PianoRollComponent(int patternId)
     lyricEditor.setVisible(false);
     lyricEditor.onReturnKey = [this]() { commitCurrentLyricEdit(); };
     lyricEditor.onEscapeKey = [this]() { discardCurrentLyricEdit(); };
-    // Note: deliberately NOT wiring onFocusLost. JUCE posts focus-loss messages
-    // asynchronously, which races with our mouseDown fluid-switch path (commit
-    // old note → immediately open editor on new note). An async onFocusLost
-    // firing after step 2 would clobber the newly-opened editor. All real
-    // commit paths are explicit: Enter, click-on-different-note in mouseDown.
+    // Click-away commit: when the editor loses keyboard focus (user clicks
+    // outside the editor entirely — e.g. transport bar, scrollbar, window
+    // frame — anywhere our mouseDown isn't going to handle the commit),
+    // save the lyric automatically. The suppressNextFocusLost flag is set
+    // by the mouseDown "fluid-switch" path (commit old → open new) where
+    // committing again from this async callback would clobber the new
+    // editor. The flag is cleared on the next message-queue drain so the
+    // very next genuine focus loss after a switch still commits.
+    lyricEditor.onFocusLost = [this]()
+        {
+            if (suppressNextFocusLost) return;
+            commitCurrentLyricEdit();
+        };
     addAndMakeVisible(lyricEditor);
 
     loadNotes();
 
-    // Educational-mode tooltips
+    // Tooltips are always on for all users now (used to be ed-mode gated).
     EducationalModeManager::getInstance().addListener(this);
-    applyTooltips(EducationalModeManager::getInstance().isEnabled());
+    applyTooltips(true);
 
     setSize(900, 400);
 }
@@ -95,11 +103,20 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
         if (idx >= 0 && idx == editingNoteIndex)
             return;
 
+        // Either case below will hide the current editor, which fires an
+        // async focus-loss for the OLD editor. Suppress that one — committing
+        // again from the async callback would clobber the freshly-opened
+        // editor (or repeat the commit we already did synchronously).
+        suppressNextFocusLost = true;
+        juce::MessageManager::callAsync([this]() { suppressNextFocusLost = false; });
+
         if (idx >= 0)
             commitCurrentLyricEdit();   // fall through to normal handling
         else
         {
-            discardCurrentLyricEdit();
+            // Click on empty grid: save the lyric (was previously discard).
+            // This is the fix for "left-click after typing should save".
+            commitCurrentLyricEdit();
             return;
         }
     }
@@ -498,28 +515,22 @@ void PianoRollComponent::loadNotes()
     PQclear(res);
 }
 // ============================================================================
-//  Educational mode: tooltips
+//  Tooltips — always-on for ALL users (independent of ed-mode toggle).
+//  Kept as a Listener so we still get the educationalModeChanged callback,
+//  but the body just re-applies tooltips unconditionally.
 // ============================================================================
 
-void PianoRollComponent::educationalModeChanged(bool isEnabled)
+void PianoRollComponent::educationalModeChanged(bool /*isEnabled*/)
 {
-    applyTooltips(isEnabled);
+    applyTooltips(true);   // arg is ignored; tooltips are always on
 }
 
-void PianoRollComponent::applyTooltips(bool eduEnabled)
+void PianoRollComponent::applyTooltips(bool /*eduEnabled — ignored*/)
 {
-    if (eduEnabled)
-    {
-        // The whole roll explains tile placement + row/column semantics
-        setTooltip(TooltipRegistry::get("pianoRollTile"));
-        // The inline text editor explains lyric → phoneme conversion
-        lyricEditor.setTooltip(TooltipRegistry::get("lyricInput"));
-    }
-    else
-    {
-        setTooltip({});
-        lyricEditor.setTooltip({});
-    }
+    // The whole roll explains tile placement + row/column semantics
+    setTooltip(TooltipRegistry::get("pianoRollTile"));
+    // The inline text editor explains lyric → phoneme conversion
+    lyricEditor.setTooltip(TooltipRegistry::get("lyricInput"));
 }
 // ============================================================================
 //  Scroll geometry helpers

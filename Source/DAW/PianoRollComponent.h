@@ -63,6 +63,12 @@ private:
     juce::TextEditor lyricEditor;
     int editingNoteIndex = -1;
 
+    // Guard for the click-on-different-note "fluid switch" path: when set,
+    // any onFocusLost firing for the OLD editor is ignored. Cleared async
+    // after the message queue drains so a real subsequent focus-loss still
+    // commits. See PianoRollComponent.cpp mouseDown for the full rationale.
+    bool suppressNextFocusLost = false;
+
     // Helper functions
     bool isBlackKey(int noteIndex) const;
     juce::Colour getNoteColour(int pitch) const;

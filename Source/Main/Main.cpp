@@ -191,6 +191,10 @@ private:
         if (username.isNotEmpty())
             currentUsername = username;
 
+        // Re-lock to the small dashboard size. Order matters: setResizable
+        // must come BEFORE setResizeLimits — calling setResizable(false,...)
+        // after a resizable session can leave a stale corner-resize affordance.
+        setResizable(false, false);
         setResizeLimits(600, 400, 600, 400);
         centreWithSize(600, 400);
         auto* pm = new ProjectManagerComponent();
@@ -222,22 +226,49 @@ private:
         const juce::String pname = projectName;
         const int          pid = projectId;
 
-        // Put a styled transitional loading screen up at the FINAL window size
-        // before building the DAW. The window resize (600x400 -> 1280x720) then
-        // reveals our gradient card rather than stretched ProjectManager pixels.
+        // ── DAW window sizing ───────────────────────────────────────────────
+        //  Default the DAW to the monitor's WORK AREA (i.e. screen minus the
+        //  taskbar) and allow the user to resize freely down to the legacy
+        //  static size of 1280x720 (the floor — UI hit-tests below this start
+        //  to overlap). Stays windowed; no fullscreen flip.
+        //
+        //  IMPORTANT: setResizable+setResizeLimits MUST be applied before any
+        //  setSize/centreWithSize call. JUCE clamps geometry against the
+        //  current limits, so flipping these in the wrong order silently
+        //  shrinks the window back to the previous (small) ceiling.
+        setResizable(true, true);
+        setResizeLimits(1280, 720, 32768, 32768);   // floor 1280x720, no real ceiling
+
+        // Use the work area of whichever display the window currently sits on.
+        const auto workArea = juce::Desktop::getInstance()
+            .getDisplays()
+            .getDisplayForRect(getBounds())
+            ->userArea;
+
+        // Final window size = work area, with a sanity floor at the static
+        // size (in case userArea is somehow misreported).
+        const int finalW = std::max(workArea.getWidth(), 1280);
+        const int finalH = std::max(workArea.getHeight(), 720);
+
+        // Resize the window FIRST, then swap content. We pass `false` to
+        // setContentOwned so it does NOT shrink the window back to the
+        // component's intrinsic size — the DAWComponent ctor calls setSize
+        // internally with its legacy 1280x720, which we explicitly want to
+        // override with the work-area size for the user's monitor.
+        setBounds(workArea.getX(), workArea.getY(), finalW, finalH);
+
+        // Put a styled transitional loading screen up at the final window size
+        // before building the DAW. The window resize then reveals our gradient
+        // card rather than stretched ProjectManager pixels.
         //
         // After the loading screen paints at least once, we build the DAW on
         // the next message-loop tick. The DAW constructor itself is synchronous
         // (it runs several DB queries + UI setup before kicking off the
         // background voice-bank loader), so the user sees the loading screen
         // animating until the DAW takes over.
-
-        setResizeLimits(1280, 720, 1280, 720);
-
         auto* loading = new ProjectLoadingScreen(pname);
-        loading->setSize(1280, 720);
-        setContentOwned(loading, true);   // <-- ProjectManagerComponent dies here
-        centreWithSize(1280, 720);
+        loading->setSize(finalW, finalH);
+        setContentOwned(loading, false);   // <-- keep window size; PM dies here
 
         // Defer DAW construction so the loading screen gets a chance to paint.
         // 60ms is a comfortable margin on the message thread — enough for a
@@ -250,7 +281,10 @@ private:
             {
                 auto* daw = new DAWComponent(pname, pid, currentUsername);
                 daw->onReturnToDashboard = [this]() { showProjectManager(""); };
-                setContentOwned(daw, true);
+                // Same `false` rationale as above — keep the window at its
+                // current (work-area) bounds; the window's own resized() will
+                // stretch the daw component to fill the content area.
+                setContentOwned(daw, false);
             });
     }
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainWindow)

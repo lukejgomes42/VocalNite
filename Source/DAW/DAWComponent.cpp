@@ -176,6 +176,15 @@ private:
 DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const juce::String& username)
     : menuBar(this), currentProjectName(projectName), currentProjectId(projectId), currentUsername(username)
 {
+    // Resolve user type ONCE at construction. getUserType returns "educational"
+    // only for verified-edu users — if verification is pending it returns
+    // "normal" automatically (safety downgrade). Drives bank gating below.
+    if (currentUsername.isNotEmpty())
+    {
+        try { currentUserType = DatabaseManager::get().getUserType(currentUsername); }
+        catch (...) { currentUserType = "normal"; }
+    }
+
     // Menu bar
     addAndMakeVisible(menuBar);
 
@@ -384,37 +393,70 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
     patternRenameEditor.setColour(juce::TextEditor::backgroundColourId, juce::Colour(50, 20, 80));
     patternRenameEditor.setColour(juce::TextEditor::textColourId, juce::Colours::white);
     patternRenameEditor.setVisible(false);
-    patternRenameEditor.onReturnKey = [this]()
+
+    // Commit-and-hide helper: factored out so both onReturnKey and onFocusLost
+    // can share the same persistence path. Idempotent — safe to call when no
+    // pattern is being edited (just hides the editor and returns).
+    auto commitPatternRename = [this]()
         {
-            if (editingPatternIndex >= 0 && editingPatternIndex < patternNames.size())
+            if (editingPatternIndex < 0 || editingPatternIndex >= patternNames.size())
             {
-                juce::String newName = patternRenameEditor.getText();
-                patternNames.set(editingPatternIndex, newName);
+                editingPatternIndex = -1;
+                patternRenameEditor.setVisible(false);
+                return;
+            }
 
-                // Update in database
-                if (editingPatternIndex < patternIds.size() && patternIds[editingPatternIndex] >= 0)
-                {
-                    try
-                    {
-                        std::string patternIdStr = std::to_string(patternIds[editingPatternIndex]);
-                        const char* params[2] = { newName.toRawUTF8(), patternIdStr.c_str() };
-                        PGresult* res = PQexecParams(DatabaseManager::get().db(),
-                            "UPDATE Patterns SET name = $1 WHERE pattern_id = $2",
-                            2, nullptr, params, nullptr, nullptr, 0);
-                        if (PQresultStatus(res) != PGRES_COMMAND_OK)
-                            DBG("Pattern rename error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
-                        PQclear(res);
-                    }
-                    catch (const std::exception& e)
-                    {
-                        DBG("Pattern rename error: " + juce::String(e.what()));
-                    }
-                }
-
+            juce::String newName = patternRenameEditor.getText().trim();
+            if (newName.isEmpty())
+            {
+                // Don't allow blank names — keep the existing name and bail.
                 editingPatternIndex = -1;
                 patternRenameEditor.setVisible(false);
                 repaint();
+                return;
             }
+
+            patternNames.set(editingPatternIndex, newName);
+
+            if (editingPatternIndex < patternIds.size() && patternIds[editingPatternIndex] >= 0)
+            {
+                try
+                {
+                    std::string patternIdStr = std::to_string(patternIds[editingPatternIndex]);
+                    const char* params[2] = { newName.toRawUTF8(), patternIdStr.c_str() };
+                    PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                        "UPDATE Patterns SET name = $1 WHERE pattern_id = $2",
+                        2, nullptr, params, nullptr, nullptr, 0);
+                    if (PQresultStatus(res) != PGRES_COMMAND_OK)
+                        DBG("Pattern rename error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+                    PQclear(res);
+                }
+                catch (const std::exception& e)
+                {
+                    DBG("Pattern rename error: " + juce::String(e.what()));
+                }
+            }
+
+            editingPatternIndex = -1;
+            patternRenameEditor.setVisible(false);
+            repaint();
+        };
+
+    patternRenameEditor.onReturnKey = commitPatternRename;
+    patternRenameEditor.onEscapeKey = [this]()
+        {
+            // Escape: cancel — drop the in-progress edit without saving.
+            editingPatternIndex = -1;
+            patternRenameEditor.setVisible(false);
+            repaint();
+        };
+    // Click-away save. Mirrors PianoRollComponent's lyric editor: a one-shot
+    // suppress flag absorbs spurious focus-loss events fired when we hide
+    // the editor programmatically (e.g. opening a new rename session).
+    patternRenameEditor.onFocusLost = [this, commitPatternRename]()
+        {
+            if (suppressNextRenameFocusLost) return;
+            commitPatternRename();
         };
     addAndMakeVisible(patternRenameEditor);
 
@@ -887,8 +929,8 @@ void DAWComponent::resized()
     // Toolbar 1
     logoLabel.setBounds(4, y1 + 5, 100, 30);
     projectNameLabel.setBounds(getWidth() / 2 - 100, y1 + 5, 200, 30);
-    selectModeButton.setBounds(getWidth() - 270, y1 + 5, 70, 30);
-    editModeButton.setBounds(getWidth() - 195, y1 + 5, 70, 30);
+    selectModeButton.setBounds(getWidth() - 305, y1 + 5, 95, 30);
+    editModeButton.setBounds(getWidth() - 205, y1 + 5, 80, 30);
     usernameLabel.setBounds(getWidth() - 120, y1 + 5, 115, 30);
 
     // Toolbar 2
@@ -1020,6 +1062,8 @@ juce::PopupMenu DAWComponent::getMenuForIndex(int menuIndex, const juce::String&
     else if (menuIndex == 6) // Help
     {
         menu.addItem(15, "VocalNite Help");
+        menu.addSeparator();
+        menu.addItem(16, "About VocalNite");
     }
     return menu;
 }
@@ -1119,6 +1163,10 @@ void DAWComponent::menuItemSelected(int menuItemID, int)
         showHelpDialog();
         break;
 
+    case 16: // About VocalNite
+        showAboutDialog();
+        break;
+
     default:
         break;
     }
@@ -1189,6 +1237,75 @@ void DAWComponent::removeTrack(int index)
     }
 }
 
+// ============================================================================
+//  getTooltip
+//  juce::TooltipClient hook — supplies dynamic hover tooltips for areas of
+//  the DAW that aren't separate components. Static-control tooltips
+//  (transport buttons, BPM, Inspector, etc.) come from setTooltip on each
+//  child component; this function fires only when JUCE walks up the
+//  hierarchy and lands on the DAWComponent itself (i.e. cursor is in the
+//  pattern browser background, the timeline grid, or the track strip).
+// ============================================================================
+
+juce::String DAWComponent::getTooltip()
+{
+    // Translate the mouse-relative-to-screen back to our local coords.
+    const auto screen = juce::Desktop::getMousePosition();
+    const auto local = getLocalPoint(nullptr, screen);
+
+    if (!getLocalBounds().contains(local)) return {};
+
+    // ── Layout constants — keep these in sync with paint() / resized() ────
+    constexpr int menuBarHeight = 25;
+    constexpr int toolbarHeight = 40;
+    constexpr int toolbar2Height = 35;
+    constexpr int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
+    constexpr int patternAreaTop = gridTop + 28;
+    constexpr int trackAreaTop = gridTop + 20;
+    constexpr int patternWidth = 150;
+    constexpr int trackHeaderWidth = 80;
+    constexpr int gridLeft = patternWidth + trackHeaderWidth;
+
+    // Hovering a pattern row in the browser?
+    if (local.x >= 4 && local.x < patternWidth - 4 && local.y >= patternAreaTop)
+    {
+        for (int i = 0; i < patternNames.size(); ++i)
+        {
+            const int rowY = patternAreaTop + i * patternHeight - (int)patternScrollOffset;
+            juce::Rectangle<int> rowRect(4, rowY, patternWidth - 8, patternHeight - 4);
+            if (rowRect.contains(local))
+            {
+                return juce::String(juce::CharPointer_UTF8(
+                    "PATTERN \xe2\x80\x94 Double-click to open the piano roll and edit notes / lyrics. "
+                    "Drag onto a track to place a clip on the timeline. "
+                    "Right-click for rename, copy, or delete."));
+            }
+        }
+    }
+
+    // Hovering a placed clip in the timeline?
+    if (local.x >= gridLeft && local.y >= trackAreaTop)
+    {
+        const int cellWidth = (int)(80.0f * cellWidthMultiplier);
+        for (const auto& clip : placedClips)
+        {
+            const int trackY = trackAreaTop + clip.trackIndex * trackHeight - (int)trackScrollOffset;
+            const int clipX = gridLeft + (int)(clip.startBeat * cellWidth) - (int)horizontalScrollOffset;
+            const int clipW = (int)(clip.duration * cellWidth);
+            juce::Rectangle<int> clipRect(clipX, trackY, clipW, trackHeight);
+            if (clipRect.contains(local))
+            {
+                return juce::String(juce::CharPointer_UTF8(
+                    "CLIP \xe2\x80\x94 Drag horizontally to move along the timeline, drag vertically to "
+                    "switch tracks, or drag back into the pattern browser to delete. "
+                    "Right-click for clip options."));
+            }
+        }
+    }
+
+    return {};
+}
+
 void DAWComponent::mouseDown(const juce::MouseEvent& e)
 {
     int menuBarHeight = 25;
@@ -1227,6 +1344,14 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
                             int patternAreaTop = gridTop + 28;
                             int gridLeft = 200;
                             int y = patternAreaTop + i * patternHeight;
+
+                            // Suppress one focus-lost: showing/refocusing the
+                            // editor causes the previously-focused window to
+                            // emit a focus-loss that would re-enter commit.
+                            suppressNextRenameFocusLost = true;
+                            juce::MessageManager::callAsync(
+                                [this]() { suppressNextRenameFocusLost = false; });
+
                             editingPatternIndex = i;
                             patternRenameEditor.setText(patternNames[i]);
                             patternRenameEditor.setBounds(4, y, gridLeft - 8, patternHeight - 4);
@@ -1380,6 +1505,110 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
                 return;
             }
         }
+
+        // ── Right-click on a placed clip in the timeline ────────────────────
+        // Hit-test mirrors mouseDrag's clip detection. Menu offers Open
+        // Pattern Editor (jumps to the pattern's piano roll), Move to Track
+        // (submenu of all tracks), and Delete Clip (with full undo/redo).
+        {
+            const int cellWidth = (int)(80.0f * cellWidthMultiplier);
+            for (int ci = 0; ci < placedClips.size(); ++ci)
+            {
+                const auto& clip = placedClips.getReference(ci);
+                const int trackY = trackAreaTop + clip.trackIndex * trackHeight - (int)trackScrollOffset;
+                const int clipX = gridLeft + (int)(clip.startBeat * cellWidth) - (int)horizontalScrollOffset;
+                const int clipW = (int)(clip.duration * cellWidth);
+                juce::Rectangle<int> clipRect(clipX, trackY, clipW, trackHeight);
+                if (!clipRect.contains(e.x, e.y)) continue;
+
+                juce::PopupMenu menu;
+                menu.addItem(101, "Open Pattern Editor");
+                menu.addSeparator();
+
+                // Move-to-track submenu — disable the row that the clip is
+                // already on so the user can't no-op it.
+                juce::PopupMenu trackSub;
+                for (int t = 0; t < trackNames.size(); ++t)
+                {
+                    trackSub.addItem(200 + t,
+                        trackNames[t],
+                        /*isActive*/ t != clip.trackIndex,
+                        /*isTicked*/ t == clip.trackIndex);
+                }
+                menu.addSubMenu("Move to Track", trackSub,
+                    /*isActive*/ trackNames.size() > 1);
+                menu.addSeparator();
+                menu.addItem(102, "Delete Clip");
+
+                menu.showMenuAsync(juce::PopupMenu::Options(),
+                    [this, ci](int result)
+                    {
+                        if (result == 0) return;
+                        if (ci < 0 || ci >= placedClips.size()) return;
+
+                        if (result == 101)
+                        {
+                            // Open Pattern Editor for this clip's pattern.
+                            const int patternIdx = placedClips[ci].patternIndex;
+                            if (patternIdx >= 0 && patternIdx < patternNames.size())
+                                openPatternEditor(patternIdx);
+                            return;
+                        }
+
+                        if (result == 102)
+                        {
+                            // Delete clip — use the same Action machinery as
+                            // dragging-to-browser-deletes so undo restores it.
+                            const int patternIdx = placedClips[ci].patternIndex;
+
+                            // Block deletion if this clip uses the pattern
+                            // currently being inspected (parity with drag-to-
+                            // browser delete in mouseUp).
+                            if (isInspecting() && patternIdx == inspectedPatternIndex)
+                            {
+                                DBG("Clip delete blocked: pattern is currently being inspected");
+                                return;
+                            }
+
+                            Action action;
+                            action.type = Action::RemoveClip;
+                            action.clip = placedClips[ci];
+                            action.clipIndex = ci;
+                            undoStack.add(action);
+                            redoStack.clear();
+                            if (undoStack.size() > 10) undoStack.remove(0);
+
+                            deleteClip(placedClips[ci].clipId);
+                            placedClips.remove(ci);
+                            repaint();
+                            return;
+                        }
+
+                        // Move to Track t — IDs 200..200+N-1
+                        if (result >= 200 && result < 200 + trackNames.size())
+                        {
+                            const int newTrack = result - 200;
+                            if (newTrack == placedClips[ci].trackIndex) return;
+
+                            Action action;
+                            action.type = Action::MoveClip;
+                            action.clipIndex = ci;
+                            action.previousClip = placedClips[ci];
+                            action.clip = placedClips[ci];
+                            action.clip.trackIndex = newTrack;
+                            undoStack.add(action);
+                            redoStack.clear();
+                            if (undoStack.size() > 10) undoStack.remove(0);
+
+                            placedClips.getReference(ci).trackIndex = newTrack;
+                            updateClip(placedClips[ci]);
+                            repaint();
+                            return;
+                        }
+                    });
+                return;
+            }
+        }
     }
     // Check track remove button
     for (int i = 0; i < trackNames.size(); ++i)
@@ -1457,6 +1686,42 @@ void DAWComponent::addPattern()
     loadFullPatternNotes();
     repaint();
     resized();
+
+    // Auto-prompt for rename — same flow as right-click > Rename. Mirrors
+    // the geometry math used there so the inline editor lands exactly on
+    // the new pattern's row in the browser.
+    const int newIndex = patternNames.size() - 1;
+    constexpr int menuBarHeight = 25;
+    constexpr int toolbarHeight = 40;
+    constexpr int toolbar2Height = 35;
+    const int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
+    const int patternAreaTop = gridTop + 28;
+    constexpr int gridLeft = 200;
+
+    // Make sure the new row is visible — scroll it into view if it's off-screen.
+    const int rowYContent = newIndex * patternHeight;
+    const int patternAreaHeight = getHeight() - gridTop - 60;
+    if (rowYContent + patternHeight > patternScrollOffset + patternAreaHeight)
+    {
+        patternScrollOffset = std::max(0.0,
+            (double)(rowYContent + patternHeight - patternAreaHeight));
+        patternScrollBar.setCurrentRangeStart(patternScrollOffset);
+    }
+
+    const int y = patternAreaTop + rowYContent - (int)patternScrollOffset;
+
+    // Suppress one focus-lost — opening this editor steals focus from
+    // wherever it was, generating a stray focus-loss notification.
+    suppressNextRenameFocusLost = true;
+    juce::MessageManager::callAsync(
+        [this]() { suppressNextRenameFocusLost = false; });
+
+    editingPatternIndex = newIndex;
+    patternRenameEditor.setText(newName);
+    patternRenameEditor.setBounds(4, y, gridLeft - 8, patternHeight - 4);
+    patternRenameEditor.setVisible(true);
+    patternRenameEditor.grabKeyboardFocus();
+    patternRenameEditor.selectAll();
 }
 
 void DAWComponent::openPatternEditor(int index)
@@ -2597,29 +2862,29 @@ void DAWComponent::educationalModeChanged(bool isEnabled)
     if (!isEnabled)
         closeInspectorWindow();
 
-    // Wire/unwire tooltips across all labeled controls
+    // Tooltips are now always on regardless of ed-mode (they're a baseline
+    // help affordance for ALL users). updateTooltips ignores its argument.
     updateTooltips(isEnabled);
 
     resized();
     repaint();
 }
 
-void DAWComponent::updateTooltips(bool eduEnabled)
+void DAWComponent::updateTooltips(bool /*eduEnabled — ignored, tooltips are always on*/)
 {
     auto t = [&](const juce::String& key) -> juce::String
         {
-            return eduEnabled ? TooltipRegistry::get(key) : juce::String{};
+            return TooltipRegistry::get(key);
         };
 
     // Transport
     playButton.setTooltip(t("playButton"));
     pauseButton.setTooltip(t("pauseButton"));
     stopButton.setTooltip(t("stopButton"));
-    metronomeButton.setTooltip(eduEnabled
-        ? juce::String("METRONOME: Plays a steady click on every beat of your "
+    metronomeButton.setTooltip(
+        juce::String("METRONOME: Plays a steady click on every beat of your "
             "current time signature. Use it to keep time while recording "
-            "or editing. The first beat of each measure is accented.")
-        : juce::String{});
+            "or editing. The first beat of each measure is accented."));
 
     // Tempo + time signature
     tempoButton.setTooltip(t("bpmControl"));
@@ -2628,21 +2893,18 @@ void DAWComponent::updateTooltips(bool eduEnabled)
     // Pattern + track management
     addPatternButton.setTooltip(t("addPattern"));
     addTrackButton.setTooltip(t("addTrack"));
-    inspectorToggleButton.setTooltip(eduEnabled
-        ? juce::String(juce::CharPointer_UTF8(
+    inspectorToggleButton.setTooltip(
+        juce::String(juce::CharPointer_UTF8(
             "SYNTHESIS INSPECTOR: Opens a window that walks you through how "
-            "the engine turns your lyrics into sung audio \xe2\x80\x94 one word at a time."))
-        : juce::String{});
+            "the engine turns your lyrics into sung audio \xe2\x80\x94 one word at a time.")));
 
     // Mode buttons (no specific registry entries; generic fallback)
-    selectModeButton.setTooltip(eduEnabled
-        ? juce::String(juce::CharPointer_UTF8(
-            "CHOOSE YOUR VOICE: Open the voice-bank selector to switch between Aaron, UTAU, and more."))
-        : juce::String{});
-    editModeButton.setTooltip(eduEnabled
-        ? juce::String(juce::CharPointer_UTF8(
-            "EDIT MODE: Click to modify clip positions and pattern contents."))
-        : juce::String{});
+    selectModeButton.setTooltip(
+        juce::String(juce::CharPointer_UTF8(
+            "SELECT VOICE: Open the voice-bank selector to switch between Aaron, UTAU, and more.")));
+    editModeButton.setTooltip(
+        juce::String(juce::CharPointer_UTF8(
+            "SETTINGS: Open the project settings panel to change the project name, master volume, BPM, and time signature.")));
 }
 
 void DAWComponent::showInspectorPatternPicker()
@@ -2926,6 +3188,16 @@ void DAWComponent::showHelpDialog()
     // of this DAWComponent and fully constructed in our ctor, there's zero
     // system-window creation latency here - setVisible(true) just flips a
     // flag and triggers a repaint.
+    helpOverlay.setMode(HelpOverlay::Mode::Help);
+    helpOverlay.setBounds(getLocalBounds());
+    helpOverlay.setVisible(true);
+    helpOverlay.toFront(true);
+}
+
+void DAWComponent::showAboutDialog()
+{
+    // Same overlay, different content. setMode swaps title + body text.
+    helpOverlay.setMode(HelpOverlay::Mode::About);
     helpOverlay.setBounds(getLocalBounds());
     helpOverlay.setVisible(true);
     helpOverlay.toFront(true);
@@ -3114,6 +3386,75 @@ juce::String DAWComponent::HelpOverlay::getHelpBody()
         "Press Esc or click outside this panel to close.\n";
 }
 
+juce::String DAWComponent::HelpOverlay::getAboutBody()
+{
+    return
+        "VocalNite\n"
+        "================================\n\n"
+        "What is VocalNite?\n"
+        "------------------\n"
+        "  VocalNite is a concatenative vocal-synthesis DAW. You write notes\n"
+        "  on a piano roll, attach lyrics to them, and the engine sings them\n"
+        "  back to you using a phoneme-by-phoneme voice bank. Drop the same\n"
+        "  pattern onto multiple tracks, sequence them on a timeline, and\n"
+        "  build full vocal arrangements.\n\n"
+        "Purpose\n"
+        "-------\n"
+        "  VocalNite was built to make vocal synthesis approachable. Most\n"
+        "  vocal-synth tools either demand professional audio engineering\n"
+        "  knowledge or hide the synthesis pipeline behind a black box.\n"
+        "  VocalNite splits the difference: it works like a familiar DAW\n"
+        "  (patterns, tracks, transport, BPM, time signatures) while letting\n"
+        "  curious users peek at exactly how the engine stitches phonemes\n"
+        "  into singing voice via the Synthesis Inspector (Educational Mode).\n\n"
+        "How it works\n"
+        "------------\n"
+        "  Lyrics get split into words, words get looked up in the CMU\n"
+        "  Pronouncing Dictionary to retrieve their ARPAbet phoneme sequence,\n"
+        "  and each phoneme is rendered from a pre-recorded WAV sample at\n"
+        "  the closest available pitch (A3 / C4 / F4). Diphones (PREV-CUR)\n"
+        "  are preferred over solo phonemes for smoother transitions, and\n"
+        "  the engine adds vibrato, slight timing jitter, and equal-power\n"
+        "  crossfades to keep things sounding human.\n\n"
+        "Educational Mode\n"
+        "----------------\n"
+        "  Verified .edu users get an extra layer: cyan-pulse highlights on\n"
+        "  transport, the Synthesis Inspector window that shows phonemes per\n"
+        "  word, and access to the UTAU voice bank in addition to Aaron.\n\n"
+        "Voice banks\n"
+        "-----------\n"
+        "  Aaron is the canonical default voice. Educational users may also\n"
+        "  swap to UTAU via the 'Select Voice' character-select screen on\n"
+        "  the toolbar. Hot-swaps happen on a background thread so playback\n"
+        "  doesn't interrupt anything else.\n\n"
+        "Project storage\n"
+        "---------------\n"
+        "  Projects, patterns, notes, tracks, and clips are persisted to a\n"
+        "  Supabase Postgres database, so your work survives between sessions\n"
+        "  and across devices logged in to the same account.\n\n"
+        "Press Esc or click outside this panel to close.\n";
+}
+
+void DAWComponent::HelpOverlay::setMode(Mode m)
+{
+    if (currentMode == m && body.getText().isNotEmpty())
+        return;   // already showing this mode
+
+    currentMode = m;
+    if (m == Mode::Help)
+    {
+        titleLabel.setText("VocalNite Help", juce::dontSendNotification);
+        body.setText(getHelpBody(), juce::dontSendNotification);
+    }
+    else
+    {
+        titleLabel.setText("About VocalNite", juce::dontSendNotification);
+        body.setText(getAboutBody(), juce::dontSendNotification);
+    }
+    body.moveCaretToTop(false);   // scroll to start when switching modes
+    repaint();
+}
+
 // ============================================================================
 //  Voice-bank character select (fighting-game-style picker + hot swap)
 // ============================================================================
@@ -3168,20 +3509,25 @@ DAWComponent::discoverAvailableBanks() const
         banks.add(aaron);
     }
 
-    // UTAU — hidden unless the folder actually contains pitch subfolders.
-    auto utauFolder = voiceBankRoot.getChildFile("UTAU");
-    if (hasPitchFolders(utauFolder))
+    // UTAU — educational-only feature. Hidden entirely for normal users
+    // even if the folder exists. Edu users still need a populated folder
+    // (at least one pitch subfolder) for the card to appear.
+    if (currentUserType == "educational")
     {
-        VoiceBankSelectorOverlay::BankInfo utau;
-        utau.id = "utau";
-        utau.displayName = "UTAU";
-        utau.description = juce::String(juce::CharPointer_UTF8(
-            "Ready to Speak!"));
-        utau.initial = "U";
-        utau.themeColour = juce::Colour(0, 220, 255);   // bright cyan
-        utau.bankFolder = utauFolder;
-        utau.portraitFile = findPortrait(utauFolder);
-        banks.add(utau);
+        auto utauFolder = voiceBankRoot.getChildFile("UTAU");
+        if (hasPitchFolders(utauFolder))
+        {
+            VoiceBankSelectorOverlay::BankInfo utau;
+            utau.id = "utau";
+            utau.displayName = "UTAU";
+            utau.description = juce::String(juce::CharPointer_UTF8(
+                "Ready to Speak!"));
+            utau.initial = "U";
+            utau.themeColour = juce::Colour(0, 220, 255);   // bright cyan
+            utau.bankFolder = utauFolder;
+            utau.portraitFile = findPortrait(utauFolder);
+            banks.add(utau);
+        }
     }
 
     return banks;
