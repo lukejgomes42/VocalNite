@@ -80,6 +80,15 @@ public:
     void clearMetronomeTick() { metronomeTickFlag.store(false); }
     int  getLastMetronomeBeat() const { return metroLastBeat.load(); }
 
+    // ── Master gain (thread-safe; applied after voices + metronome are mixed)
+    //   0.0 = silent, 1.0 = unity (default), 1.5 = +3.5 dB ceiling. Clamped.
+    //   Safe to call from any thread — atomic read in the audio callback.
+    void  setMasterGain(float linearGain) noexcept
+    {
+        masterGain.store(juce::jlimit(0.0f, 1.5f, linearGain));
+    }
+    float getMasterGain() const noexcept { return masterGain.load(); }
+
 private:
     // ── Dictionary ──────────────────────────────────────────────────────────
     std::unordered_map<std::string, std::vector<std::string>> dictionary;
@@ -156,6 +165,10 @@ private:
 
     static constexpr int kCrossfadeSamples = 1024;
     static constexpr int kReleaseSamples = 2048;
+
+    // Master gain — applied as a final multiply after voices + metronome are
+    // mixed into outL/outR in getNextAudioBlock. 1.0 = unity.
+    std::atomic<float> masterGain{ 1.0f };
 
     // ── Humanisation RNG ────────────────────────────────────────────────────
     std::mt19937 rng{ std::random_device{}() };

@@ -164,6 +164,15 @@ private:
     void deleteTrackFromDB(int trackId);
     void loadTracks();
 
+    // Persistence for project-wide settings stored on Projects row
+    void loadProjectSettings();           // called once from ctor; reads bpm + time_signature
+    void saveProjectSettings();           // writes currentBPM + currentTimeSig back to DB
+    void saveProjectName(const juce::String& newName);   // updates Projects.name
+
+    // Project Settings dialog (opened by both the toolbar Edit button and
+    // the File-menu > Project > Project Settings item).
+    void openProjectSettings();
+
     // Help
     void showHelpDialog();
 
@@ -331,6 +340,70 @@ private:
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HelpOverlay)
     };
     HelpOverlay helpOverlay;
+
+    // ── Project Settings overlay ────────────────────────────────────────────
+    //  Themed card matching HelpOverlay. Hosts project-wide controls:
+    //   - Project name (renames the Projects row on commit)
+    //   - Master Volume (0-150%, updates VocalSynthEngine::setMasterGain live)
+    //   - BPM (30-522, updates VocalSynthEngine::setTempo live + DB)
+    //   - Time Signature (popup, updates engine + DB)
+    //  Live callbacks let DAWComponent sync its toolbar labels and persist
+    //  changes without waiting for the overlay to close.
+    class ProjectSettingsOverlay : public juce::Component,
+        private juce::Slider::Listener
+    {
+    public:
+        ProjectSettingsOverlay();
+        ~ProjectSettingsOverlay() override;
+
+        void paint(juce::Graphics& g) override;
+        void resized() override;
+        void mouseDown(const juce::MouseEvent& e) override;
+        bool keyPressed(const juce::KeyPress& key) override;
+        void visibilityChanged() override;
+
+        // Seed current project values before showing. Call setVisible(true) after.
+        void prime(const juce::String& projectName,
+            int bpm,
+            const juce::String& timeSig,
+            float masterVolume01);
+
+        // Owner (DAWComponent) wires these in ctor
+        std::function<void(const juce::String&)> onProjectNameCommitted;
+        std::function<void(int)>                 onBpmChanged;
+        std::function<void(const juce::String&)> onTimeSigChanged;
+        std::function<void(float)>               onMasterVolumeChanged;
+
+    private:
+        void sliderValueChanged(juce::Slider* s) override;
+        juce::Rectangle<int> getCardBounds() const;
+
+        juce::Label      titleLabel;
+        juce::TextButton closeButton;
+
+        juce::Label      nameLabel;
+        juce::TextEditor nameEditor;
+
+        juce::Label      volumeLabel;
+        juce::Label      volumeValueLabel;
+        juce::Slider     volumeSlider;
+
+        juce::Label      bpmLabel;
+        juce::Label      bpmValueLabel;
+        juce::Slider     bpmSlider;
+
+        juce::Label      timeSigLabel;
+        juce::TextButton timeSigButton;
+
+        juce::Label      footerLabel;
+
+        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ProjectSettingsOverlay)
+    };
+    ProjectSettingsOverlay projectSettingsOverlay;
+
+    // Session-local master volume (0.0..1.5). 1.0 = unity. Mirrored on the
+    // engine via VocalSynthEngine::setMasterGain on every change.
+    float masterVolume01 = 1.0f;
 
     // Enable/disable transport + inspector buttons based on isVocalBankReady
     void refreshTransportEnabled();

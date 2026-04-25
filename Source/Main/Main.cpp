@@ -93,6 +93,32 @@ private:
 };
 
 //==============================================================================
+//  loadAppIcon
+//  Walks UP from the .exe to find the Resources folder and loads icon.png.
+//  Same parent-directory walk as DAWComponent's resource resolution so we
+//  match in dev (Builds/...) and in shipped layouts. Returns an invalid
+//  Image if no icon file is present — caller falls back to JUCE default.
+//==============================================================================
+static juce::Image loadAppIcon()
+{
+    juce::File searchDir = juce::File::getSpecialLocation(
+        juce::File::currentExecutableFile).getParentDirectory();
+
+    for (int i = 0; i < 10; ++i)
+    {
+        juce::File candidate = searchDir.getChildFile("Resources");
+        if (candidate.isDirectory())
+        {
+            juce::File iconFile = candidate.getChildFile("icon.png");
+            if (iconFile.existsAsFile())
+                return juce::ImageFileFormat::loadFrom(iconFile);
+        }
+        searchDir = searchDir.getParentDirectory();
+    }
+    return {};
+}
+
+//==============================================================================
 // Standalone MainWindow class
 class MainWindow : public juce::DocumentWindow
 {
@@ -105,6 +131,12 @@ public:
         setUsingNativeTitleBar(false);
         setResizeLimits(600, 400, 600, 400);
         setResizable(false, false);
+
+        // Custom-titlebar icon — shows in the top-left corner of the window
+        // (the OS taskbar icon comes from the .exe's embedded icon, which is
+        //  set via Projucer's "Icon (large)" field — see project notes).
+        if (auto img = loadAppIcon(); img.isValid())
+            setIcon(img);
 
         // Center and size code stays the same...
         auto screenArea = juce::Desktop::getInstance().getDisplays().getMainDisplay().userArea;

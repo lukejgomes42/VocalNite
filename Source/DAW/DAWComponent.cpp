@@ -8,6 +8,109 @@
 #include <unordered_set>
 
 // ──────────────────────────────────────────────────────────────────────────
+//  TransportButtonLookAndFeel
+//  Draws crisp vector glyphs (play triangle / pause bars / stop square) on
+//  top of a rounded, subtly-gradient-filled button background. We identify
+//  which glyph to draw via each button's componentID ("transport_play",
+//  "transport_pause", "transport_stop"). This keeps the existing
+//  juce::TextButton members intact — all existing setColour, setEnabled,
+//  and onClick wiring continues to work unchanged.
+//  The LnF reads textColourOnId/textColourOffId so refreshTransportEnabled()
+//  dimming still works when the voice bank is still loading.
+// ──────────────────────────────────────────────────────────────────────────
+class TransportButtonLookAndFeel : public juce::LookAndFeel_V4
+{
+public:
+    void drawButtonBackground(juce::Graphics& g, juce::Button& button,
+        const juce::Colour& /*backgroundColour*/,
+        bool shouldDrawButtonAsHighlighted,
+        bool shouldDrawButtonAsDown) override
+    {
+        auto bounds = button.getLocalBounds().toFloat().reduced(0.5f);
+
+        juce::Colour base = button.findColour(juce::TextButton::buttonColourId);
+        if (shouldDrawButtonAsDown)       base = base.brighter(0.18f);
+        else if (shouldDrawButtonAsHighlighted) base = base.brighter(0.10f);
+
+        // Subtle vertical gradient — gives the button a bit of depth
+        juce::ColourGradient grad(base.brighter(0.18f),
+            bounds.getCentreX(), bounds.getY(),
+            base.darker(0.35f),
+            bounds.getCentreX(), bounds.getBottom(), false);
+        g.setGradientFill(grad);
+        g.fillRoundedRectangle(bounds, 6.0f);
+
+        // Thin border — brighter on hover
+        g.setColour(juce::Colour(100, 70, 150).withAlpha(shouldDrawButtonAsHighlighted ? 0.95f : 0.65f));
+        g.drawRoundedRectangle(bounds, 6.0f, 1.0f);
+    }
+
+    void drawButtonText(juce::Graphics& g, juce::TextButton& button,
+        bool /*shouldDrawButtonAsHighlighted*/,
+        bool shouldDrawButtonAsDown) override
+    {
+        const auto id = button.getComponentID();
+        const auto bounds = button.getLocalBounds().toFloat();
+
+        // Glyph colour follows the button's text colour so the disabled-dim
+        // done by refreshTransportEnabled() still works.
+        juce::Colour glyph = button.findColour(
+            button.getToggleState() ? juce::TextButton::textColourOnId
+            : juce::TextButton::textColourOffId);
+        if (!button.isEnabled()) glyph = glyph.withAlpha(0.45f);
+        if (shouldDrawButtonAsDown) glyph = glyph.brighter(0.10f);
+
+        g.setColour(glyph);
+
+        // Available icon area with padding so glyphs don't touch the border
+        auto icon = bounds.reduced(bounds.getWidth() * 0.28f,
+            bounds.getHeight() * 0.22f);
+
+        if (id == "transport_play")
+        {
+            // Rightward-pointing triangle, centered
+            juce::Path p;
+            p.addTriangle(icon.getX(), icon.getY(),
+                icon.getX(), icon.getBottom(),
+                icon.getRight(), icon.getCentreY());
+            g.fillPath(p);
+        }
+        else if (id == "transport_pause")
+        {
+            // Two vertical rounded bars with a small gap
+            const float barW = icon.getWidth() * 0.30f;
+            const float gap = icon.getWidth() * 0.18f;
+            const float cx = icon.getCentreX();
+            juce::Rectangle<float> left(cx - gap * 0.5f - barW, icon.getY(), barW, icon.getHeight());
+            juce::Rectangle<float> right(cx + gap * 0.5f, icon.getY(), barW, icon.getHeight());
+            g.fillRoundedRectangle(left, 1.5f);
+            g.fillRoundedRectangle(right, 1.5f);
+        }
+        else if (id == "transport_stop")
+        {
+            // Solid slightly-rounded square, centered
+            const float side = juce::jmin(icon.getWidth(), icon.getHeight()) * 0.92f;
+            auto sq = icon.withSizeKeepingCentre(side, side);
+            g.fillRoundedRectangle(sq, 2.0f);
+        }
+        else
+        {
+            // Fallback: behave like a normal TextButton if no id matches
+            juce::LookAndFeel_V4::drawButtonText(g, button,
+                /*isOver*/ false, shouldDrawButtonAsDown);
+        }
+    }
+};
+
+static TransportButtonLookAndFeel& getSharedTransportLnF()
+{
+    // Function-local static: constructed on first call, destroyed at app exit
+    // (well after any DAWComponent teardown). No ordering issues.
+    static TransportButtonLookAndFeel lnf;
+    return lnf;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 //  TopRightTooltipLookAndFeel
 //  A LookAndFeel variant that pins tooltips to the top-right corner of the
 //  parent window instead of following the cursor. Attached via setLookAndFeel
@@ -96,15 +199,25 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
     projectNameLabel.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(projectNameLabel);
 
-    // Transport buttons
-    playButton.setButtonText(">");
-    pauseButton.setButtonText("||");
-    stopButton.setButtonText("[]");
+    // Transport buttons — glyphs are drawn by TransportButtonLookAndFeel.
+    // Each button's componentID tells the LnF which shape to render.
+    // Keeping them as TextButton preserves all existing onClick/setColour/
+    // setEnabled wiring and HighlightOverlay highlighting.
+    playButton.setComponentID("transport_play");
+    pauseButton.setComponentID("transport_pause");
+    stopButton.setComponentID("transport_stop");
+
+    // Clear any old text (the LnF ignores it, but this keeps a11y labels clean)
+    playButton.setButtonText({});
+    pauseButton.setButtonText({});
+    stopButton.setButtonText({});
 
     for (auto* btn : { &playButton, &pauseButton, &stopButton })
     {
-        btn->setColour(juce::TextButton::buttonColourId, juce::Colour(40, 40, 60));
+        btn->setLookAndFeel(&getSharedTransportLnF());
+        btn->setColour(juce::TextButton::buttonColourId, juce::Colour(48, 30, 72));
         btn->setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+        btn->setColour(juce::TextButton::textColourOffId, juce::Colours::white);
         addAndMakeVisible(btn);
     }
 
@@ -161,8 +274,8 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
         };
 
     // Mode buttons
-    selectModeButton.setButtonText("Select");
-    editModeButton.setButtonText("Edit");
+    selectModeButton.setButtonText("Select Voice");
+    editModeButton.setButtonText("Settings");
 
     for (auto* btn : { &selectModeButton, &editModeButton })
     {
@@ -173,6 +286,9 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
 
     // Select button opens the fighting-game-style voice bank picker.
     selectModeButton.onClick = [this]() { openVoiceBankSelector(); };
+
+    // Edit button opens the Project Settings overlay (same as File > Project > Project Settings).
+    editModeButton.onClick = [this]() { openProjectSettings(); };
 
     // Metronome button
     metronomeButton.setButtonText("Metro");
@@ -374,6 +490,7 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
     }
 
     loadPatterns();
+    loadProjectSettings();      // seeds currentBPM + currentTimeSig from Projects row
     loadPatternNotes();
     loadFullPatternNotes();
     loadClips();
@@ -420,9 +537,60 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
     loadingOverlay.setStatus("Loading voice bank...");
     refreshTransportEnabled();   // disables transport until voice bank is ready
 
-    // Help overlay — hidden by default, toggled on via Help > About VocalNite
+    // Help overlay — hidden by default, toggled on via Help > VocalNite Help
     addChildComponent(helpOverlay);
     helpOverlay.setAlwaysOnTop(true);
+
+    // Project Settings overlay — hidden by default, shown by toolbar "Edit"
+    // button and by File-menu > Project > Project Settings.
+    addChildComponent(projectSettingsOverlay);
+    projectSettingsOverlay.setAlwaysOnTop(true);
+
+    projectSettingsOverlay.onProjectNameCommitted = [this](juce::String newName)
+        {
+            newName = newName.trim();
+            if (newName.isEmpty() || newName == currentProjectName) return;
+            currentProjectName = newName;
+            projectNameLabel.setText(newName, juce::dontSendNotification);
+            saveProjectName(newName);
+        };
+
+    projectSettingsOverlay.onBpmChanged = [this](int newBpm)
+        {
+            newBpm = juce::jlimit(30, 522, newBpm);
+            if (newBpm == currentBPM) return;
+            currentBPM = newBpm;
+            vocalSynth.setTempo((double)currentBPM);
+            tempoButton.setButtonText("BPM: " + juce::String(currentBPM));
+
+            // If the metronome is currently playing, re-align it so the next
+            // click uses the new tempo without drifting from the playhead.
+            if (isPlaying && metronomeEnabled)
+                vocalSynth.resetMetronome(playheadPosition);
+
+            saveProjectSettings();
+        };
+
+    projectSettingsOverlay.onTimeSigChanged = [this](juce::String newSig)
+        {
+            if (newSig.isEmpty() || newSig == currentTimeSig) return;
+            currentTimeSig = newSig;
+            timeSigButton.setButtonText(currentTimeSig);
+            int num = 4, den = 4;
+            parseTimeSignature(currentTimeSig, num, den);
+            vocalSynth.setTimeSignature(num, den);
+
+            if (isPlaying && metronomeEnabled)
+                vocalSynth.resetMetronome(playheadPosition);
+
+            saveProjectSettings();
+        };
+
+    projectSettingsOverlay.onMasterVolumeChanged = [this](float newVol01)
+        {
+            masterVolume01 = juce::jlimit(0.0f, 1.5f, newVol01);
+            vocalSynth.setMasterGain(masterVolume01);
+        };
 
     // Voice bank selector — hidden by default, shown via the toolbar "Select" button.
     addChildComponent(voiceBankSelectorOverlay);
@@ -441,6 +609,13 @@ DAWComponent::~DAWComponent()
     // Signal any in-flight async callbacks that the component is going away.
     // They check this before touching any member state.
     isDying.store(true);
+
+    // Drop LookAndFeel references before our LnF singleton (if ever rebuilt
+    // or replaced) can be touched. These buttons are TextButton members that
+    // pointed at TransportButtonLookAndFeel via setLookAndFeel().
+    playButton.setLookAndFeel(nullptr);
+    pauseButton.setLookAndFeel(nullptr);
+    stopButton.setLookAndFeel(nullptr);
 
     // Stop the resource loader first — if it's still running, it needs to
     // finish before we start tearing down other members it might touch.
@@ -792,6 +967,11 @@ void DAWComponent::resized()
     if (helpOverlay.isVisible())
         helpOverlay.toFront(false);
 
+    // Project Settings overlay spans the full area when visible
+    projectSettingsOverlay.setBounds(getLocalBounds());
+    if (projectSettingsOverlay.isVisible())
+        projectSettingsOverlay.toFront(false);
+
     // Voice-bank selector overlay spans the full area when visible
     voiceBankSelectorOverlay.setBounds(getLocalBounds());
     if (voiceBankSelectorOverlay.isVisible())
@@ -839,7 +1019,7 @@ juce::PopupMenu DAWComponent::getMenuForIndex(int menuIndex, const juce::String&
     }
     else if (menuIndex == 6) // Help
     {
-        menu.addItem(15, "About VocalNite");
+        menu.addItem(15, "VocalNite Help");
     }
     return menu;
 }
@@ -869,6 +1049,10 @@ void DAWComponent::menuItemSelected(int menuItemID, int)
     case 8: // Zoom Out
         cellWidthMultiplier = std::max(cellWidthMultiplier - 0.25f, 0.5f);
         repaint();
+        break;
+
+    case 9: // Project Settings
+        openProjectSettings();
         break;
 
     case 10: // Play (toggles: pressing while playing = pause)
@@ -931,7 +1115,7 @@ void DAWComponent::menuItemSelected(int menuItemID, int)
     case 14: // Export As
         break;
 
-    case 15: // About / Help
+    case 15: // Help
         showHelpDialog();
         break;
 
@@ -3100,4 +3284,402 @@ void DAWComponent::VoiceBankSwapThread::run()
         {
             ownerPtr->onVoiceBankSwapFinished(id, ok);
         });
+}
+// ============================================================================
+//  Project Settings — DB helpers
+// ============================================================================
+
+void DAWComponent::loadProjectSettings()
+{
+    if (currentProjectId < 0) return;
+
+    try
+    {
+        std::string pidStr = std::to_string(currentProjectId);
+        const char* params[1] = { pidStr.c_str() };
+        PGresult* res = PQexecParams(DatabaseManager::get().db(),
+            "SELECT bpm, time_signature FROM Projects WHERE project_id = $1",
+            1, nullptr, params, nullptr, nullptr, 0);
+
+        if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1)
+        {
+            const char* bpmStr = PQgetvalue(res, 0, 0);
+            const char* tsStr = PQgetvalue(res, 0, 1);
+
+            if (bpmStr != nullptr && bpmStr[0] != '\0')
+            {
+                int bpm = std::atoi(bpmStr);
+                if (bpm >= 30 && bpm <= 522)
+                {
+                    currentBPM = bpm;
+                    vocalSynth.setTempo((double)currentBPM);
+                    tempoButton.setButtonText("BPM: " + juce::String(currentBPM));
+                }
+            }
+
+            if (tsStr != nullptr && tsStr[0] != '\0')
+            {
+                juce::String sig(tsStr);
+                sig = sig.trim();
+                if (sig.isNotEmpty())
+                {
+                    currentTimeSig = sig;
+                    timeSigButton.setButtonText(currentTimeSig);
+                    int num = 4, den = 4;
+                    parseTimeSignature(currentTimeSig, num, den);
+                    vocalSynth.setTimeSignature(num, den);
+                }
+            }
+        }
+        PQclear(res);
+    }
+    catch (const std::exception& e)
+    {
+        DBG("loadProjectSettings error: " + juce::String(e.what()));
+    }
+}
+
+void DAWComponent::saveProjectSettings()
+{
+    if (currentProjectId < 0) return;
+
+    try
+    {
+        std::string bpmStr = std::to_string(currentBPM);
+        std::string pidStr = std::to_string(currentProjectId);
+        juce::String ts = currentTimeSig;
+        const char* params[3] = { bpmStr.c_str(), ts.toRawUTF8(), pidStr.c_str() };
+        PGresult* res = PQexecParams(DatabaseManager::get().db(),
+            "UPDATE Projects SET bpm = $1::int, time_signature = $2 WHERE project_id = $3",
+            3, nullptr, params, nullptr, nullptr, 0);
+
+        if (PQresultStatus(res) != PGRES_COMMAND_OK)
+            DBG("saveProjectSettings error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+        PQclear(res);
+    }
+    catch (const std::exception& e)
+    {
+        DBG("saveProjectSettings error: " + juce::String(e.what()));
+    }
+}
+
+void DAWComponent::saveProjectName(const juce::String& newName)
+{
+    if (currentProjectId < 0) return;
+
+    try
+    {
+        std::string pidStr = std::to_string(currentProjectId);
+        const char* params[2] = { newName.toRawUTF8(), pidStr.c_str() };
+        PGresult* res = PQexecParams(DatabaseManager::get().db(),
+            "UPDATE Projects SET name = $1 WHERE project_id = $2",
+            2, nullptr, params, nullptr, nullptr, 0);
+
+        if (PQresultStatus(res) != PGRES_COMMAND_OK)
+            DBG("saveProjectName error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+        PQclear(res);
+    }
+    catch (const std::exception& e)
+    {
+        DBG("saveProjectName error: " + juce::String(e.what()));
+    }
+}
+
+void DAWComponent::openProjectSettings()
+{
+    // Seed the overlay with live values, then show it.
+    projectSettingsOverlay.prime(currentProjectName,
+        currentBPM,
+        currentTimeSig,
+        masterVolume01);
+    projectSettingsOverlay.setBounds(getLocalBounds());
+    projectSettingsOverlay.setVisible(true);
+    projectSettingsOverlay.toFront(true);
+}
+
+// ============================================================================
+//  ProjectSettingsOverlay implementation
+// ============================================================================
+
+DAWComponent::ProjectSettingsOverlay::ProjectSettingsOverlay()
+{
+    setInterceptsMouseClicks(true, true);
+
+    titleLabel.setText("Project Settings", juce::dontSendNotification);
+    titleLabel.setFont(juce::Font(22.0f, juce::Font::bold));
+    titleLabel.setColour(juce::Label::textColourId, juce::Colours::hotpink);
+    titleLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(titleLabel);
+
+    closeButton.setButtonText("X");
+    closeButton.setColour(juce::TextButton::buttonColourId, juce::Colour(50, 20, 80));
+    closeButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(80, 30, 120));
+    closeButton.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    closeButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    closeButton.onClick = [this]() { setVisible(false); };
+    addAndMakeVisible(closeButton);
+
+    auto styleLabel = [](juce::Label& L, float fontSize, bool bold,
+        juce::Colour col, juce::Justification just)
+        {
+            L.setFont(juce::Font(fontSize, bold ? juce::Font::bold : juce::Font::plain));
+            L.setColour(juce::Label::textColourId, col);
+            L.setJustificationType(just);
+        };
+
+    // Project Name
+    styleLabel(nameLabel, 13.0f, true, juce::Colour(200, 160, 230),
+        juce::Justification::centredLeft);
+    nameLabel.setText("Project Name", juce::dontSendNotification);
+    addAndMakeVisible(nameLabel);
+
+    nameEditor.setColour(juce::TextEditor::backgroundColourId, juce::Colour(28, 20, 50));
+    nameEditor.setColour(juce::TextEditor::textColourId, juce::Colours::white);
+    nameEditor.setColour(juce::TextEditor::outlineColourId,
+        juce::Colours::hotpink.withAlpha(0.4f));
+    nameEditor.setColour(juce::TextEditor::focusedOutlineColourId,
+        juce::Colours::hotpink.withAlpha(0.8f));
+    nameEditor.setFont(juce::Font(15.0f));
+    nameEditor.setSelectAllWhenFocused(true);
+    nameEditor.onReturnKey = [this]()
+        {
+            if (onProjectNameCommitted)
+                onProjectNameCommitted(nameEditor.getText());
+        };
+    nameEditor.onFocusLost = [this]()
+        {
+            if (onProjectNameCommitted)
+                onProjectNameCommitted(nameEditor.getText());
+        };
+    addAndMakeVisible(nameEditor);
+
+    // Master Volume
+    styleLabel(volumeLabel, 13.0f, true, juce::Colour(200, 160, 230),
+        juce::Justification::centredLeft);
+    volumeLabel.setText("Master Volume", juce::dontSendNotification);
+    addAndMakeVisible(volumeLabel);
+
+    styleLabel(volumeValueLabel, 13.0f, false, juce::Colours::white,
+        juce::Justification::centredRight);
+    addAndMakeVisible(volumeValueLabel);
+
+    volumeSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+    volumeSlider.setRange(0.0, 150.0, 1.0);    // percent
+    volumeSlider.setValue(100.0, juce::dontSendNotification);
+    volumeSlider.setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
+    volumeSlider.setColour(juce::Slider::backgroundColourId, juce::Colour(30, 20, 45));
+    volumeSlider.setColour(juce::Slider::trackColourId, juce::Colours::hotpink.withAlpha(0.55f));
+    volumeSlider.setColour(juce::Slider::thumbColourId, juce::Colours::hotpink);
+    volumeSlider.addListener(this);
+    addAndMakeVisible(volumeSlider);
+
+    // BPM
+    styleLabel(bpmLabel, 13.0f, true, juce::Colour(200, 160, 230),
+        juce::Justification::centredLeft);
+    bpmLabel.setText("BPM", juce::dontSendNotification);
+    addAndMakeVisible(bpmLabel);
+
+    styleLabel(bpmValueLabel, 13.0f, false, juce::Colours::white,
+        juce::Justification::centredRight);
+    addAndMakeVisible(bpmValueLabel);
+
+    bpmSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+    bpmSlider.setRange(30.0, 522.0, 1.0);
+    bpmSlider.setValue(120.0, juce::dontSendNotification);
+    bpmSlider.setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
+    bpmSlider.setColour(juce::Slider::backgroundColourId, juce::Colour(30, 20, 45));
+    bpmSlider.setColour(juce::Slider::trackColourId, juce::Colours::hotpink.withAlpha(0.55f));
+    bpmSlider.setColour(juce::Slider::thumbColourId, juce::Colours::hotpink);
+    bpmSlider.addListener(this);
+    addAndMakeVisible(bpmSlider);
+
+    // Time Signature
+    styleLabel(timeSigLabel, 13.0f, true, juce::Colour(200, 160, 230),
+        juce::Justification::centredLeft);
+    timeSigLabel.setText("Time Signature", juce::dontSendNotification);
+    addAndMakeVisible(timeSigLabel);
+
+    timeSigButton.setButtonText("4/4");
+    timeSigButton.setColour(juce::TextButton::buttonColourId, juce::Colour(40, 25, 60));
+    timeSigButton.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    timeSigButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+    timeSigButton.onClick = [this]()
+        {
+            juce::PopupMenu menu;
+            juce::StringArray sigs = {
+                "2/4", "3/4", "4/4", "5/4", "6/4", "7/4",
+                "3/8", "5/8", "6/8", "7/8", "9/8", "12/8",
+                "2/2", "3/2", "4/2"
+            };
+            for (int i = 0; i < sigs.size(); ++i)
+                menu.addItem(i + 1, sigs[i]);
+
+            menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(timeSigButton),
+                [this, sigs](int result)
+                {
+                    if (result > 0)
+                    {
+                        juce::String picked = sigs[result - 1];
+                        timeSigButton.setButtonText(picked);
+                        if (onTimeSigChanged)
+                            onTimeSigChanged(picked);
+                    }
+                });
+        };
+    addAndMakeVisible(timeSigButton);
+
+    styleLabel(footerLabel, 11.0f, false, juce::Colour(150, 130, 180),
+        juce::Justification::centred);
+    footerLabel.setText("Press Esc or click outside this panel to close.",
+        juce::dontSendNotification);
+    addAndMakeVisible(footerLabel);
+}
+
+DAWComponent::ProjectSettingsOverlay::~ProjectSettingsOverlay()
+{
+    volumeSlider.removeListener(this);
+    bpmSlider.removeListener(this);
+}
+
+void DAWComponent::ProjectSettingsOverlay::prime(const juce::String& projectName,
+    int bpm,
+    const juce::String& timeSig,
+    float masterVolume01)
+{
+    nameEditor.setText(projectName, juce::dontSendNotification);
+
+    const double v = juce::jlimit(0.0, 150.0, (double)(masterVolume01 * 100.0f));
+    volumeSlider.setValue(v, juce::dontSendNotification);
+    volumeValueLabel.setText(juce::String((int)std::round(v)) + " %",
+        juce::dontSendNotification);
+
+    const int b = juce::jlimit(30, 522, bpm);
+    bpmSlider.setValue((double)b, juce::dontSendNotification);
+    bpmValueLabel.setText(juce::String(b) + " BPM", juce::dontSendNotification);
+
+    timeSigButton.setButtonText(timeSig.isNotEmpty() ? timeSig : juce::String("4/4"));
+
+    repaint();
+}
+
+void DAWComponent::ProjectSettingsOverlay::sliderValueChanged(juce::Slider* s)
+{
+    if (s == &volumeSlider)
+    {
+        const int pct = (int)std::round(volumeSlider.getValue());
+        volumeValueLabel.setText(juce::String(pct) + " %",
+            juce::dontSendNotification);
+        if (onMasterVolumeChanged)
+            onMasterVolumeChanged((float)pct / 100.0f);
+    }
+    else if (s == &bpmSlider)
+    {
+        const int bpm = (int)std::round(bpmSlider.getValue());
+        bpmValueLabel.setText(juce::String(bpm) + " BPM",
+            juce::dontSendNotification);
+        if (onBpmChanged)
+            onBpmChanged(bpm);
+    }
+}
+
+juce::Rectangle<int> DAWComponent::ProjectSettingsOverlay::getCardBounds() const
+{
+    const int w = juce::jmin(560, getWidth() - 80);
+    const int h = juce::jmin(430, getHeight() - 60);
+    return juce::Rectangle<int>((getWidth() - w) / 2,
+        (getHeight() - h) / 2,
+        w, h);
+}
+
+void DAWComponent::ProjectSettingsOverlay::paint(juce::Graphics& g)
+{
+    // Dim backdrop
+    g.fillAll(juce::Colour(0, 0, 0).withAlpha(0.55f));
+
+    auto card = getCardBounds().toFloat();
+
+    juce::ColourGradient grad(juce::Colour(35, 25, 55),
+        card.getCentreX(), card.getY(),
+        juce::Colour(20, 15, 35),
+        card.getCentreX(), card.getBottom(), false);
+    g.setGradientFill(grad);
+    g.fillRoundedRectangle(card, 12.0f);
+
+    g.setColour(juce::Colours::hotpink.withAlpha(0.6f));
+    g.drawRoundedRectangle(card, 12.0f, 1.5f);
+
+    const float divY = card.getY() + 52.0f;
+    g.setColour(juce::Colours::hotpink.withAlpha(0.25f));
+    g.drawLine(card.getX() + 14.0f, divY, card.getRight() - 14.0f, divY, 1.0f);
+}
+
+void DAWComponent::ProjectSettingsOverlay::resized()
+{
+    auto card = getCardBounds();
+
+    // Header
+    auto header = card.removeFromTop(52);
+    closeButton.setBounds(header.removeFromRight(44).withSizeKeepingCentre(28, 28));
+    titleLabel.setBounds(header.reduced(18, 0));
+
+    // Body
+    auto body = card.reduced(20, 14);
+
+    // Footer reserved at bottom
+    auto footer = body.removeFromBottom(20);
+    footerLabel.setBounds(footer);
+    body.removeFromBottom(6);
+
+    const int rowH = 24;
+    const int controlH = 28;
+    const int sectionGap = 14;
+
+    auto doRow = [&](juce::Label& heading, juce::Component* control,
+        juce::Label* rightValue)
+        {
+            auto hr = body.removeFromTop(rowH);
+            if (rightValue != nullptr)
+            {
+                rightValue->setBounds(hr.removeFromRight(90));
+            }
+            heading.setBounds(hr);
+
+            if (control != nullptr)
+                control->setBounds(body.removeFromTop(controlH));
+
+            body.removeFromTop(sectionGap);
+        };
+
+    doRow(nameLabel, &nameEditor, nullptr);
+    doRow(volumeLabel, &volumeSlider, &volumeValueLabel);
+    doRow(bpmLabel, &bpmSlider, &bpmValueLabel);
+    doRow(timeSigLabel, &timeSigButton, nullptr);
+}
+
+void DAWComponent::ProjectSettingsOverlay::mouseDown(const juce::MouseEvent& e)
+{
+    if (!getCardBounds().contains(e.getPosition()))
+        setVisible(false);
+}
+
+bool DAWComponent::ProjectSettingsOverlay::keyPressed(const juce::KeyPress& key)
+{
+    if (key == juce::KeyPress::escapeKey)
+    {
+        // Commit any in-progress name edit before dismissing
+        if (nameEditor.hasKeyboardFocus(true) && onProjectNameCommitted)
+            onProjectNameCommitted(nameEditor.getText());
+        setVisible(false);
+        return true;
+    }
+    return false;
+}
+
+void DAWComponent::ProjectSettingsOverlay::visibilityChanged()
+{
+    if (isVisible())
+    {
+        setWantsKeyboardFocus(true);
+        grabKeyboardFocus();
+    }
 }

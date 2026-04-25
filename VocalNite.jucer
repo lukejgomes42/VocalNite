@@ -45,6 +45,7 @@
       </GROUP>
       <GROUP id="{F42397E7-D4D3-01C1-5D98-9061DD0DE510}" name="VoiceBank"/>
       <FILE id="I9XQ7i" name="cmudict.txt" compile="0" resource="1" file="Resources/cmudict.txt"/>
+      <FILE id="lob8Y1" name="icon.png" compile="0" resource="1" file="Resources/icon.png"/>
     </GROUP>
     <GROUP id="{69EC30F4-DBF3-583D-B33A-8D575564E6E7}" name="Source">
       <GROUP id="{D97D73C3-7620-AE36-71AA-AE85DE00864A}" name="Educational">
@@ -135,7 +136,8 @@
   </MODULES>
   <JUCEOPTIONS JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
   <EXPORTFORMATS>
-    <VS2026 targetFolder="Builds/VisualStudio2026" extraLinkerFlags="libpq.lib&#10;libcurl.lib">
+    <VS2026 targetFolder="Builds/VisualStudio2026" extraLinkerFlags="libpq.lib&#10;libcurl.lib"
+            smallIcon="lob8Y1" bigIcon="lob8Y1">
       <CONFIGURATIONS>
         <CONFIGURATION isDebug="1" name="Debug" targetName="VocalNite" headerPath="../../Source/Database&#10;../../External/sqlite&#10;../../External/SQLiteCpp/include&#10;C:\vcpkg\installed\x64-windows\include"
                        libraryPath="C:\vcpkg\installed\x64-windows\lib"/>

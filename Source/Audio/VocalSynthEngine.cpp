@@ -183,6 +183,18 @@ void VocalSynthEngine::getNextAudioBlock(const juce::AudioSourceChannelInfo& inf
 
     if (metronomeEnabled.load())
         renderMetronome(outL, outR, numSamples);
+
+    // ── Master gain (final stage) ───────────────────────────────────────────
+    // Applied once per block after voices + metronome are fully mixed, so it
+    // affects everything the engine emits. Skip the multiply when at unity to
+    // avoid wasted cycles on the audio thread.
+    const float g = masterGain.load();
+    if (g != 1.0f)
+    {
+        juce::FloatVectorOperations::multiply(outL, g, numSamples);
+        if (outR != outL)
+            juce::FloatVectorOperations::multiply(outR, g, numSamples);
+    }
 }
 
 // ============================================================================
