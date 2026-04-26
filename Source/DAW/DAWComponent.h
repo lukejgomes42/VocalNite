@@ -476,5 +476,72 @@ private:
 
     std::unique_ptr<VoiceBankSwapThread> voiceBankSwapThread;
 
+    // ── Timeline export (File menu > Export As) ─────────────────────────────
+    //
+    //  Renders every PlacedClip on the timeline through VocalSynthEngine
+    //  offline (faster than realtime), writes the result as a 16-bit WAV.
+    //  Defaults the save location to ~/Downloads (falling back to Documents).
+    //
+    //  Flow:
+    //   1. exportTimelineAsWav() — gates on bank-ready + non-empty timeline,
+    //      shows a FileChooser, schedules startExport() on confirmation.
+    //   2. startExport() — stops transport, detaches the engine from the audio
+    //      device, snapshots clips/notes/BPM, shows the loading overlay, kicks
+    //      off ExportThread.
+    //   3. ExportThread::run() — offline render loop: walks samples in
+    //      blocks, triggers per-beat queueLyric calls (mirroring the live
+    //      timer's "integer-beat crossing" logic), pulls audio out via
+    //      vocalSynth.getNextAudioBlock(), writes the assembled buffer to
+    //      disk through juce::WavAudioFormat, posts onExportFinished via
+    //      MessageManager::callAsync.
+    //   4. onExportFinished() — restores the engine to live audio (re-prepares
+    //      at the device's native sample rate, re-attaches the callback),
+    //      hides the overlay, shows a result alert.
+    //
+    //  All reads of placedClips / patternFullNotes during export are done
+    //  against the snapshot inside ExportThread, so the user can keep clicking
+    //  in the UI without racing the render. The audio-thread engine isn't
+    //  active during the export (callback removed), so the export thread
+    //  has exclusive access to vocalSynth.
+    void exportTimelineAsWav();
+    void startExport(const juce::File& destFile);
+    void onExportFinished(bool success, const juce::File& destFile);
+
+    class ExportThread : public juce::Thread
+    {
+    public:
+        ExportThread(DAWComponent& owner,
+            const juce::File& destFile,
+            juce::Array<PlacedClip> clipsCopy,
+            juce::Array<juce::Array<FullNote>> fullNotesCopy,
+            int bpmCopy,
+            double maxBeatCopy)
+            : juce::Thread("VocalNite Export"),
+            owner(owner),
+            destFile(destFile),
+            clipsCopy(std::move(clipsCopy)),
+            fullNotesCopy(std::move(fullNotesCopy)),
+            bpm(bpmCopy),
+            maxBeat(maxBeatCopy) {
+        }
+
+        void run() override;
+
+    private:
+        // Mirrors DAWComponent::triggerNotesAtBeat but reads from the local
+        // snapshot — ensures concurrent UI edits during export can't mutate
+        // what we're rendering.
+        void triggerForBeat(int globalBeat);
+
+        DAWComponent& owner;
+        juce::File    destFile;
+        juce::Array<PlacedClip>            clipsCopy;
+        juce::Array<juce::Array<FullNote>> fullNotesCopy;
+        int    bpm;
+        double maxBeat;
+    };
+
+    std::unique_ptr<ExportThread> exportThread;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DAWComponent)
 };

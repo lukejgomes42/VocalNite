@@ -289,7 +289,9 @@ int VocalSynthEngine::phonemeMinSamples(PhonemeType type, double sampleRate)
 //  readSample — with loop or one-shot mode
 // ============================================================================
 
-float VocalSynthEngine::readSample(const juce::AudioBuffer<float>* buf, int& readPos, bool loop)
+float VocalSynthEngine::readSample(const juce::AudioBuffer<float>* buf, int& readPos,
+    bool loop,
+    const std::vector<float>* xfade, int xfadeFade)
 {
     if (buf == nullptr) return 0.0f;
     const int len = buf->getNumSamples();
@@ -297,7 +299,48 @@ float VocalSynthEngine::readSample(const juce::AudioBuffer<float>* buf, int& rea
 
     if (loop)
     {
-        // Looping mode: crossfade at the loop boundary to avoid clicks
+        // ── Seamless loop (sustain slots) ──────────────────────────────────
+        // Uses a precomputed xfade buffer that blends buf[len-fade..len-1]
+        // into buf[0..fade-1]. Loop structure:
+        //   First pass  : buf[0 .. len-fade-1]  (plays attack once)
+        //                 xfade[0 .. fade-1]    (transition)
+        //   Each cycle  : buf[fade .. len-fade-1] (steady-state, no attack repeat)
+        //                 xfade[0 .. fade-1]    (transition)
+        // Every boundary is between adjacent samples → no click.
+        if (xfade != nullptr && xfadeFade > 0 && (int)xfade->size() >= xfadeFade
+            && len > 2 * xfadeFade)
+        {
+            const int fade = xfadeFade;
+            const int loopBodyLen = len - 2 * fade;   // pure steady-state per cycle
+            const int firstPass = len - fade;        // buf samples before first xfade
+            const int cycleLen = loopBodyLen + fade; // = len - fade per loop cycle
+
+            float sample;
+            if (readPos < firstPass)
+            {
+                sample = buf->getSample(0, readPos);
+            }
+            else if (readPos < len)
+            {
+                // First xfade region
+                sample = (*xfade)[readPos - firstPass];
+            }
+            else
+            {
+                // Subsequent loop cycles
+                int pos = (readPos - len) % cycleLen;
+                if (pos < loopBodyLen)
+                    sample = buf->getSample(0, fade + pos);
+                else
+                    sample = (*xfade)[pos - loopBodyLen];
+            }
+
+            ++readPos;
+            return sample;
+        }
+
+        // ── Legacy loop crossfade (non-sustain phonemes, short slots) ──────
+        // Imperfect but adequate for the brief consonant loops (< 1 beat).
         const int loopFade = std::min(256, len / 4);
         int idx = readPos % len;
         float sample = buf->getSample(0, idx);
@@ -306,7 +349,7 @@ float VocalSynthEngine::readSample(const juce::AudioBuffer<float>* buf, int& rea
         if (distToEnd < loopFade && loopFade > 0)
         {
             float t = (float)distToEnd / (float)loopFade;
-            int wrapIdx = loopFade - distToEnd;
+            int   wrapIdx = loopFade - distToEnd;
             float startSample = buf->getSample(0, wrapIdx % len);
             sample = sample * t + startSample * (1.0f - t);
         }
@@ -389,10 +432,11 @@ bool VocalSynthEngine::renderVoice(Voice& v, float* outL, float* outR, int numSa
 
         // ── Read current phoneme sample ─────────────────────────────────────
         bool loopThis = !slot.isLast;  // last phoneme: one-shot; others: loop
-        float sampleIn = readSample(slot.buffer, slot.readPos, loopThis);
+        const std::vector<float>* xfadeBuf = slot.loopXfade.empty() ? nullptr : &slot.loopXfade;
+        float sampleIn = readSample(slot.buffer, slot.readPos, loopThis, xfadeBuf, slot.loopFadeSamples);
 
         // Apply vibrato speed modulation
-        if (extraRead) readSample(slot.buffer, slot.readPos, loopThis);  // advance extra
+        if (extraRead) readSample(slot.buffer, slot.readPos, loopThis, xfadeBuf, slot.loopFadeSamples);  // advance extra
         if (skipRead && slot.readPos > 0) --slot.readPos;                // step back
 
         // ── Per-phoneme amplitude envelope ──────────────────────────────────
@@ -479,8 +523,8 @@ void VocalSynthEngine::queueLyric(const juce::String& lyric, int gridPitch,
     }
     if (allPhonemes.empty()) return;
 
-    int  midiPitch = gridPitchToMidi(gridPitch);
-    auto noteFolder = nearestNoteFolder(midiPitch, availableNoteFolders);
+    const int  midiPitch = gridPitchToMidi(gridPitch);
+    const auto noteFolder = nearestNoteFolder(midiPitch, availableNoteFolders);
 
     // One beat's worth of time, derived from BPM
     const double secondsPerBeat = 60.0 / juce::jlimit(30.0, 400.0, bpm);
@@ -488,7 +532,10 @@ void VocalSynthEngine::queueLyric(const juce::String& lyric, int gridPitch,
     // Clamp durationBeats defensively (DB stores it as int >= 1, but be safe)
     const double safeDuration = juce::jlimit(0.25, 64.0, durationBeats);
 
-    Voice v = buildVoice(allPhonemes, noteFolder, secondsPerBeat, safeDuration);
+    // buildVoice now takes the target MIDI directly so it can pitch-shift
+    // each phoneme buffer to match the requested note when the source folder
+    // doesn't already line up exactly.
+    Voice v = buildVoice(allPhonemes, noteFolder, midiPitch, secondsPerBeat, safeDuration);
     v.active = true;
 
     // Randomise vibrato parameters for humanisation
@@ -510,28 +557,94 @@ void VocalSynthEngine::queueLyric(const juce::String& lyric, int gridPitch,
 }
 
 // ============================================================================
+//  pitchShiftBuffer — Lagrange-interpolated resample
+// ============================================================================
+//
+//  Used by buildVoice to fill in piano-roll rows that have no dedicated voice
+//  bank folder. Given the source phoneme buffer recorded at some folder MIDI
+//  and a target pitch N semitones away, this produces a fresh buffer that
+//  plays the same phoneme at the target pitch.
+//
+//  speedRatio (input samples consumed per output sample) = 2^(shift / 12).
+//    shift = +12  → ratio 2.0   → output is half the length, pitch up an octave
+//    shift = -12  → ratio 0.5   → output is double length, pitch down an octave
+//  Output length = round(srcLen / speedRatio) so the entire input is consumed.
+//
+//  Called from queueLyric → buildVoice on the message thread, NOT the audio
+//  thread. Allocation is fine here. The resulting shared_ptr is stored in
+//  PhonemeSlot::ownedBuffer to keep the buffer alive for the lifetime of the
+//  voice.
+
+std::shared_ptr<juce::AudioBuffer<float>> VocalSynthEngine::pitchShiftBuffer(
+    const juce::AudioBuffer<float>& src, double semitoneShift)
+{
+    const int srcLen = src.getNumSamples();
+    const int srcCh = std::max(1, src.getNumChannels());
+
+    if (srcLen <= 0)
+        return std::make_shared<juce::AudioBuffer<float>>(srcCh, 0);
+
+    const double speedRatio = std::pow(2.0, semitoneShift / 12.0);
+    const int    dstLen = std::max(1, (int)std::llround((double)srcLen / speedRatio));
+
+    auto dst = std::make_shared<juce::AudioBuffer<float>>(srcCh, dstLen);
+    dst->clear();
+
+    juce::LagrangeInterpolator interp;
+    for (int ch = 0; ch < srcCh; ++ch)
+    {
+        interp.reset();
+        interp.process(speedRatio,
+            src.getReadPointer(ch),
+            dst->getWritePointer(ch),
+            dstLen);
+    }
+    return dst;
+}
+
+// ============================================================================
 //  buildVoice — diphone-first lookup with single-phoneme fallback
 // ============================================================================
 
-const juce::AudioBuffer<float>* VocalSynthEngine::findBuffer(
-    const std::string& key, const std::string& noteFolder) const
+VocalSynthEngine::BufferLookup VocalSynthEngine::findBuffer(
+    const std::string& key, const std::string& preferredFolder) const
 {
-    // Try exact pitch first
-    auto it = voiceBank.find(key + "_" + noteFolder);
-    if (it != voiceBank.end()) return &it->second;
+    BufferLookup hit;
 
-    // Try all available pitches
+    // Try preferred folder first — this is whichever folder is closest in
+    // semitones to the requested target pitch.
+    {
+        auto it = voiceBank.find(key + "_" + preferredFolder);
+        if (it != voiceBank.end())
+        {
+            hit.buffer = &it->second;
+            hit.srcFolderMidi = noteNameToMidi(preferredFolder);
+            return hit;
+        }
+    }
+
+    // Fallback: scan every other available pitch folder. We may not always
+    // have the exact phoneme/diphone in the preferred folder (e.g. only A3
+    // recorded "HH-AH"), so we try all loaded folders before giving up.
     for (const auto& nf : availableNoteFolders)
     {
+        if (nf.second == preferredFolder) continue;     // already tried above
         auto fbIt = voiceBank.find(key + "_" + nf.second);
-        if (fbIt != voiceBank.end()) return &fbIt->second;
+        if (fbIt != voiceBank.end())
+        {
+            hit.buffer = &fbIt->second;
+            hit.srcFolderMidi = nf.first;
+            return hit;
+        }
     }
-    return nullptr;
+
+    return hit;   // {nullptr, -1}
 }
 
 VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
     const std::vector<std::string>& phonemes,
     const std::string& noteFolder,
+    int    targetMidi,
     double secondsPerBeat,
     double durationBeats)
 {
@@ -547,6 +660,7 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
 
     struct SlotPlan {
         const juce::AudioBuffer<float>* buffer = nullptr;
+        int   sourceFolderMidi = -1;     // MIDI of the folder this buffer was loaded from
         PhonemeType type = PhonemeType::Vowel;
         float weight = 1.0f;
         bool isDiphone = false;
@@ -568,17 +682,24 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
 
         // Try diphone: PREV-CUR
         std::string diphoneKey = prev + "-" + cur;
-        plan.buffer = findBuffer(diphoneKey, noteFolder);
-        if (plan.buffer)
+        auto bl = findBuffer(diphoneKey, noteFolder);
+        if (bl.buffer)
         {
+            plan.buffer = bl.buffer;
+            plan.sourceFolderMidi = bl.srcFolderMidi;
             plan.isDiphone = true;
             ++diphoneHits;
         }
         else
         {
             // Fallback: solo phoneme CUR
-            plan.buffer = findBuffer(cur, noteFolder);
-            if (plan.buffer) ++soloHits;
+            bl = findBuffer(cur, noteFolder);
+            if (bl.buffer)
+            {
+                plan.buffer = bl.buffer;
+                plan.sourceFolderMidi = bl.srcFolderMidi;
+                ++soloHits;
+            }
         }
 
         if (plan.buffer)
@@ -593,11 +714,12 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
     if (!phonemes.empty())
     {
         std::string releaseKey = phonemes.back() + "-xx";
-        auto* relBuf = findBuffer(releaseKey, noteFolder);
-        if (relBuf)
+        auto bl = findBuffer(releaseKey, noteFolder);
+        if (bl.buffer)
         {
             SlotPlan rel;
-            rel.buffer = relBuf;
+            rel.buffer = bl.buffer;
+            rel.sourceFolderMidi = bl.srcFolderMidi;
             rel.type = classifyPhoneme(phonemes.back());
             rel.weight = 0.5f;  // releases are short
             rel.isDiphone = true;
@@ -612,7 +734,8 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
     DBG("buildVoice: " + juce::String((int)phonemes.size()) + " phonemes -> "
         + juce::String(diphoneHits) + " diphones, "
         + juce::String(soloHits) + " solos, "
-        + juce::String(durationBeats, 2) + " beats");
+        + juce::String(durationBeats, 2) + " beats, target MIDI "
+        + juce::String(targetMidi));
 
     // ---- Sustain target (singer-style note hold) -----------------------------
     // For durationBeats > 1 we stretch ONE slot to fill the extra time:
@@ -650,6 +773,27 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
     {
         auto& p = plans[pi];
 
+        // ── Pitch shift ─────────────────────────────────────────────────────
+        // If the buffer's source folder MIDI doesn't equal targetMidi, resample
+        // to bridge the gap. This is the entire reason this engine can fill in
+        // notes outside the recorded pitch folders (C5/F#4/A3 in Aaron) — every
+        // other piano-roll row gets here with shift != 0 and we synthesise the
+        // right pitch via Lagrange resampling. The shared_ptr keeps the new
+        // buffer alive for the lifetime of the slot.
+        std::shared_ptr<juce::AudioBuffer<float>> ownedShifted;
+        if (p.buffer != nullptr && p.sourceFolderMidi >= 0)
+        {
+            const int shift = targetMidi - p.sourceFolderMidi;
+            if (shift != 0 && p.buffer->getNumSamples() > 0)
+            {
+                ownedShifted = pitchShiftBuffer(*p.buffer, (double)shift);
+                if (ownedShifted && ownedShifted->getNumSamples() > 0)
+                    p.buffer = ownedShifted.get();   // rest of buildVoice uses the shifted copy
+                else
+                    ownedShifted.reset();             // fall back to original on failure
+            }
+        }
+
         int slotLen = (int)((p.weight / totalWeight) * oneBeatSamples);
         slotLen = (int)(slotLen * jitterDist(rng));
 
@@ -661,6 +805,7 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
 
         PhonemeSlot slot;
         slot.buffer = p.buffer;
+        slot.ownedBuffer = ownedShifted;   // null if no shift; non-null keeps the resampled buf alive
         slot.type = p.type;
 
         if (isSustain)
@@ -669,6 +814,35 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
             // Force loop mode by clearing isLast — renderVoice keys off that.
             slot.slotLength = slotLen + extraSustainSamples;
             slot.isLast = false;
+
+            // Precompute seamless loop crossfade buffer so the sustain slot
+            // loops without audible clicks at the wrap boundary.
+            // xfade[i] = lerp(buf[len-fade+i], buf[i], i/fade)
+            // This blends the tail of the buffer into the head; the resulting
+            // loop structure plays the attack once, then cycles through the
+            // steady-state region + xfade with no per-cycle amplitude jump.
+            //
+            // NOTE: this builds against p.buffer, which may already be the
+            // pitch-shifted copy — so the xfade indices line up correctly with
+            // whatever buffer renderVoice will actually be reading.
+            if (p.buffer != nullptr)
+            {
+                const int blen = p.buffer->getNumSamples();
+                const int fade = std::min(256, blen / 4);
+                if (fade > 0 && blen > 2 * fade)
+                {
+                    slot.loopFadeSamples = fade;
+                    slot.loopXfade.resize(fade);
+                    const float fadeF = static_cast<float>(fade);
+                    for (int xi = 0; xi < fade; ++xi)
+                    {
+                        float t = static_cast<float>(xi) / fadeF;
+                        float endS = p.buffer->getSample(0, blen - fade + xi);
+                        float startS = p.buffer->getSample(0, xi);
+                        slot.loopXfade[xi] = endS * (1.0f - t) + startS * t;
+                    }
+                }
+            }
         }
         else if (isLast && p.type != PhonemeType::StopConsonant)
         {
@@ -725,7 +899,7 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
             slot.releaseStart = slot.slotLength;
         }
 
-        v.phonemes.push_back(slot);
+        v.phonemes.push_back(std::move(slot));
     }
 
     return v;
@@ -837,6 +1011,10 @@ bool VocalSynthEngine::loadVoiceBank(const juce::File& voiceBankFolder)
 //    references will survive into the new bank.
 //  - loadVoiceBank() itself clears voiceBank and repopulates.
 //  - setPaused(false) resumes the audio thread with a fresh voiceBank.
+//
+//  Pitch-shifted slots own their resampled buffer via shared_ptr, so even if
+//  we somehow missed clearing them they would not point into the cleared
+//  voiceBank map — but we clear them anyway for cleanliness.
 
 bool VocalSynthEngine::reloadVoiceBank(const juce::File& voiceBankFolder)
 {
@@ -892,7 +1070,17 @@ std::string VocalSynthEngine::stripStress(const std::string& phoneme) const
     return out;
 }
 
-int VocalSynthEngine::gridPitchToMidi(int gridPitch) { return (95 - gridPitch) + 12; }
+int VocalSynthEngine::gridPitchToMidi(int gridPitch)
+{
+    // Maps piano-roll row index (0 = A6, 14 = C2) to MIDI pitch.
+    // Matches the kRowMidi table in PianoRollComponent exactly.
+    static constexpr int kRowMidi[15] = {
+        93, 90, 84, 81, 78, 72, 69, 66, 60, 57, 54, 48, 45, 42, 36
+    };
+    if (gridPitch < 0 || gridPitch >= 15)
+        return 60;   // safe fallback: C4
+    return kRowMidi[gridPitch];
+}
 
 std::string VocalSynthEngine::nearestNoteFolder(int midiPitch,
     const std::vector<std::pair<int, std::string>>& available)

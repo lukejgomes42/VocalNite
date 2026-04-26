@@ -16,16 +16,13 @@ public:
     void paint(juce::Graphics& g) override;
     void resized() override;
 
-    // ScrollBar listener
     void scrollBarMoved(juce::ScrollBar* bar, double newRangeStart) override;
 
-    // Mouse interaction
     void mouseDown(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
 
-    // EducationalModeManager::Listener
     void educationalModeChanged(bool isEnabled) override;
 
 private:
@@ -33,43 +30,55 @@ private:
 
     // Layout constants
     static constexpr int keyWidth = 80;
-    static constexpr int noteHeight = 16;
-    static constexpr int numOctaves = 8;
-    static constexpr int numKeys = numOctaves * 12;
+    static constexpr int numKeys = 15;     // C, F#, A across octaves 2-6
     static constexpr int cellWidth = 40;
     static constexpr int numBeats = 32;
     static constexpr int headerHeight = 24;
+
+    // noteHeight is dynamic — recomputed in resized() to fill the available
+    // viewport so we don't waste space at the bottom on tall windows.
+    int noteHeight = 28;
+
+    // Voice-bank note classes (C, F#, A) repeated over 5 octaves.
+    // Row 0 = highest pitch (A6), row 14 = lowest (C2).
+    // Bank folder rows are: row 5 = C5, row 7 = F#4, row 9 = A3.
+    static constexpr int kRowMidi[15] = {
+        93, 90, 84, 81, 78, 72, 69, 66, 60, 57, 54, 48, 45, 42, 36
+    };
+    static constexpr const char* kRowNames[15] = {
+        "A6","F#6","C6","A5","F#5","C5","A4","F#4","C4","A3","F#3","C3","A2","F#2","C2"
+    };
+    static bool rowIsSharp(int row) { return row % 3 == 1; }
+    static bool rowIsBankNote(int row) { return row == 5 || row == 7 || row == 9; }
 
     // Scrollbars
     juce::ScrollBar verticalScroll{ true };
     juce::ScrollBar horizontalScroll{ false };
 
-    // Scroll offsets
     double verticalOffset = 0.0;
     double horizontalOffset = 0.0;
 
-    // Placed notes storage
     struct Note
     {
         int pitch;
         int beat;
         juce::String lyric;
-        int duration = 1;
+        int duration = 1;     // legacy field — kept for DB compatibility
     };
     juce::Array<Note> placedNotes;
-    bool isResizingNote = false;
-    int resizingNoteIndex = -1;
+
+    // Note drag state
+    bool isDraggingNote = false;
+    int  draggingNoteIndex = -1;
+    int  dragStartMouseX = 0;
+    int  dragStartMouseY = 0;
+    int  dragOriginalBeat = 0;
+    int  dragOriginalPitch = 0;
 
     juce::TextEditor lyricEditor;
     int editingNoteIndex = -1;
-
-    // Guard for the click-on-different-note "fluid switch" path: when set,
-    // any onFocusLost firing for the OLD editor is ignored. Cleared async
-    // after the message queue drains so a real subsequent focus-loss still
-    // commits. See PianoRollComponent.cpp mouseDown for the full rationale.
     bool suppressNextFocusLost = false;
 
-    // Helper functions
     bool isBlackKey(int noteIndex) const;
     juce::Colour getNoteColour(int pitch) const;
     void saveNote(int pitch, int beat, const juce::String& lyric = "", int duration = 1);
@@ -77,21 +86,18 @@ private:
     void loadNotes();
     void applyTooltips(bool eduEnabled);
 
-    // Lyric editor helpers
-    void commitCurrentLyricEdit();                // save typed text, hide editor
-    void discardCurrentLyricEdit();               // hide editor without saving
-    void positionLyricEditorForEditingNote();     // snap editor to current note's screen pos
+    void commitCurrentLyricEdit();
+    void discardCurrentLyricEdit();
+    void positionLyricEditorForEditingNote();
     int  findNoteIndexAtMouse(const juce::MouseEvent& e) const;
 
-    // Scroll geometry helpers
-    int  getViewportWidth()  const;   // grid area width  (excludes keys + vscroll)
-    int  getViewportHeight() const;   // grid area height (excludes header + hscroll)
+    int    getViewportWidth()  const;
+    int    getViewportHeight() const;
     double getMaxVerticalOffset()   const;
     double getMaxHorizontalOffset() const;
-    void   clampOffsetsToViewport();  // re-clamp + push to scrollbars
+    void   clampOffsetsToViewport();
     void   centreVerticallyOnMidi(int midi);
 
-    // One-shot: auto-scroll to C4 on first valid resized()
     bool initialScrollApplied = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PianoRollComponent)

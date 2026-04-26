@@ -144,17 +144,14 @@ public:
         : DocumentWindow(title, juce::Colour(15, 15, 25), DocumentWindow::closeButton)
     {
         setUsingNativeTitleBar(false);
-        setResizable(true, true);             // allow resize + show corner grip
+        setResizable(true, true);
         setResizeLimits(800, 500, 3200, 2000);
 
-        // Pin educational tooltips to the top-right corner.
         tooltipWindow.setLookAndFeel(&tooltipLnF);
     }
 
     ~PatternEditorWindow() override
     {
-        // Drop the LookAndFeel reference before our LnF member destructs
-        // (avoids the Component holding a pointer to dead memory briefly).
         tooltipWindow.setLookAndFeel(nullptr);
     }
 
@@ -163,10 +160,35 @@ public:
         delete this;
     }
 
+    // Auto-save & close: when the user clicks back into the main DAW window
+    // (or any other app), commit any open lyric edit and dismiss the editor.
+    // The PianoRollComponent's lyric editor already commits on focus loss
+    // (its onFocusLost handler hits commitCurrentLyricEdit), and per-note
+    // edits are persisted as you make them, so simply destroying the window
+    // here is a clean save-and-close.
+    void activeWindowStatusChanged() override
+    {
+        // Skip the very first call (window initially gaining focus on creation)
+        if (!hasBecomeActiveOnce)
+        {
+            if (isActiveWindow()) hasBecomeActiveOnce = true;
+            return;
+        }
+        if (isActiveWindow()) return;   // we just regained focus — nothing to do
+
+        // Defer deletion to the next message-loop tick so any pending
+        // focus-loss commits on the lyric editor get to fire first.
+        juce::Component::SafePointer<PatternEditorWindow> safeThis(this);
+        juce::MessageManager::callAsync([safeThis]()
+            {
+                if (auto* w = safeThis.getComponent())
+                    delete w;
+            });
+    }
+
 private:
-    // Declaration order matters: tooltipLnF must construct BEFORE tooltipWindow
-    // (so the pointer set in the ctor body is valid) and must destruct AFTER
-    // tooltipWindow (reverse-of-construction = tooltipWindow goes first).
+    bool hasBecomeActiveOnce = false;
+
     TopRightTooltipLookAndFeel tooltipLnF;
     juce::TooltipWindow        tooltipWindow{ this, 600 };
 
@@ -632,6 +654,7 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
         {
             masterVolume01 = juce::jlimit(0.0f, 1.5f, newVol01);
             vocalSynth.setMasterGain(masterVolume01);
+            saveProjectSettings();
         };
 
     // Voice bank selector — hidden by default, shown via the toolbar "Select" button.
@@ -665,6 +688,15 @@ DAWComponent::~DAWComponent()
     {
         resourceLoader->stopThread(5000);  // wait up to 5s
         resourceLoader.reset();
+    }
+
+    // ── Stop the export thread (if a render is in flight) ───────────────────
+    // Mirrors the voiceBankSwapThread cleanup below. isDying was set above so
+    // any in-flight ExportThread::run() will see threadShouldExit() and bail.
+    if (exportThread != nullptr)
+    {
+        exportThread->stopThread(5000);
+        exportThread.reset();
     }
 
     // Stop any in-flight voice bank hot-swap too.
@@ -1157,6 +1189,7 @@ void DAWComponent::menuItemSelected(int menuItemID, int)
         break;
 
     case 14: // Export As
+        exportTimelineAsWav();
         break;
 
     case 15: // Help
@@ -1739,7 +1772,7 @@ void DAWComponent::openPatternEditor(int index)
     auto* window = new PatternEditorWindow("Pattern Editor: " + patternNames[index]);
     auto* roll = new PianoRollComponent(patternId);
     window->setContentOwned(roll, true);
-    window->centreWithSize(1280, 720);
+    window->centreWithSize(1280, 600);
     window->setVisible(true);
 
     // Reload note previews and full notes when the editor is closed
@@ -3605,6 +3638,7 @@ void DAWComponent::onVoiceBankSwapFinished(const juce::String& bankId, bool succ
     {
         currentVoiceBankId = bankId;
         DBG("Voice bank swap complete: " + bankId);
+        saveProjectSettings();
     }
     else
     {
@@ -3644,7 +3678,7 @@ void DAWComponent::loadProjectSettings()
         std::string pidStr = std::to_string(currentProjectId);
         const char* params[1] = { pidStr.c_str() };
         PGresult* res = PQexecParams(DatabaseManager::get().db(),
-            "SELECT bpm, time_signature FROM Projects WHERE project_id = $1",
+            "SELECT bpm, time_signature, master_volume, voice_bank_index FROM Projects WHERE project_id = $1",
             1, nullptr, params, nullptr, nullptr, 0);
 
         if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1)
@@ -3676,6 +3710,20 @@ void DAWComponent::loadProjectSettings()
                     vocalSynth.setTimeSignature(num, den);
                 }
             }
+            const char* volStr = PQgetvalue(res, 0, 2);
+            if (volStr != nullptr && volStr[0] != '\0')
+            {
+                float vol = (float)std::atof(volStr);
+                masterVolume01 = juce::jlimit(0.0f, 1.5f, vol);
+                vocalSynth.setMasterGain(masterVolume01);
+            }
+
+            const char* vbStr = PQgetvalue(res, 0, 3);
+            if (vbStr != nullptr && vbStr[0] != '\0')
+            {
+                int vbIndex = std::atoi(vbStr);
+                currentVoiceBankId = (vbIndex == 1) ? "utau" : "aaron";
+            }
         }
         PQclear(res);
     }
@@ -3694,10 +3742,14 @@ void DAWComponent::saveProjectSettings()
         std::string bpmStr = std::to_string(currentBPM);
         std::string pidStr = std::to_string(currentProjectId);
         juce::String ts = currentTimeSig;
-        const char* params[3] = { bpmStr.c_str(), ts.toRawUTF8(), pidStr.c_str() };
+        std::string volStr = std::to_string(masterVolume01);
+        int vbIndex = (currentVoiceBankId == "utau") ? 1 : 0;
+        std::string vbStr = std::to_string(vbIndex);
+
+        const char* params[5] = { bpmStr.c_str(), ts.toRawUTF8(), volStr.c_str(), vbStr.c_str(), pidStr.c_str() };
         PGresult* res = PQexecParams(DatabaseManager::get().db(),
-            "UPDATE Projects SET bpm = $1::int, time_signature = $2 WHERE project_id = $3",
-            3, nullptr, params, nullptr, nullptr, 0);
+            "UPDATE Projects SET bpm = $1::int, time_signature = $2, master_volume = $3::float, voice_bank_index = $4::int WHERE project_id = $5",
+            5, nullptr, params, nullptr, nullptr, 0);
 
         if (PQresultStatus(res) != PGRES_COMMAND_OK)
             DBG("saveProjectSettings error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
@@ -4027,5 +4079,298 @@ void DAWComponent::ProjectSettingsOverlay::visibilityChanged()
     {
         setWantsKeyboardFocus(true);
         grabKeyboardFocus();
+    }
+}
+
+void DAWComponent::exportTimelineAsWav()
+{
+    if (!isVocalBankReady.load())
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+            "Cannot Export Yet",
+            "The voice bank is still loading. Please wait a moment, then try again.");
+        return;
+    }
+
+    if (placedClips.isEmpty())
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon,
+            "Nothing to Export",
+            "Place some clips on the timeline first, then export.");
+        return;
+    }
+
+    // ── Default save location: ~/Downloads, fall back to Documents ──────────
+    juce::File downloads = juce::File::getSpecialLocation(juce::File::userHomeDirectory)
+        .getChildFile("Downloads");
+    if (!downloads.isDirectory())
+        downloads = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+
+    juce::String safeName = juce::File::createLegalFileName(currentProjectName);
+    if (safeName.trim().isEmpty()) safeName = "VocalNite Export";
+    juce::File defaultFile = downloads.getChildFile(safeName + ".wav");
+
+    // shared_ptr keeps the chooser alive until the async callback fires.
+    auto chooser = std::make_shared<juce::FileChooser>(
+        "Export Project as WAV",
+        defaultFile,
+        "*.wav");
+
+    auto* chooserPtr = chooser.get();
+    chooserPtr->launchAsync(
+        juce::FileBrowserComponent::saveMode
+        | juce::FileBrowserComponent::warnAboutOverwriting,
+        [this, chooser](const juce::FileChooser& fc)
+        {
+            if (isDying.load()) return;
+
+            juce::File f = fc.getResult();
+            if (f == juce::File()) return;        // user cancelled
+            if (f.getFileExtension().isEmpty())
+                f = f.withFileExtension(".wav");
+
+            startExport(f);
+        });
+}
+
+void DAWComponent::startExport(const juce::File& destFile)
+{
+    // ── Halt live transport so nothing fights the offline renderer ──────────
+    if (isPlaying)
+    {
+        isPlaying = false;
+        stopTimer();
+    }
+    vocalSynth.setPaused(false);
+    vocalSynth.stop();
+    vocalSynth.setMetronomeEnabled(false);
+    playheadPosition = 0.0;
+    lastTriggeredBeat = -1;
+
+    // ── Detach engine from the audio device ─────────────────────────────────
+    // Until we re-attach in onExportFinished, the audio thread will not call
+    // vocalSynth.getNextAudioBlock(). The export thread has exclusive access.
+    audioDeviceManager.removeAudioCallback(&synthPlayer);
+    synthPlayer.setSource(nullptr);
+
+    // Dim transport buttons during export (gates on isVocalBankReady, same
+    // as the voice-bank-load and voice-bank-swap flows).
+    isVocalBankReady.store(false);
+    refreshTransportEnabled();
+
+    // Show the existing loading overlay with a render-specific status message.
+    loadingOverlay.setStatus("Rendering project to WAV...");
+    loadingOverlay.setVisible(true);
+    loadingOverlay.toFront(false);
+    repaint();
+
+    // ── Compute timeline length (highest clip end across all tracks) ────────
+    double maxBeat = 0.0;
+    for (const auto& c : placedClips)
+        maxBeat = std::max(maxBeat, c.startBeat + c.duration);
+
+    // ── Snapshot what the renderer needs ────────────────────────────────────
+    // The render runs on a worker thread; copying these arrays now means the
+    // user can keep editing clips/patterns during export with zero races.
+    juce::Array<PlacedClip>            clipsCopy = placedClips;
+    juce::Array<juce::Array<FullNote>> fullNotesCopy = patternFullNotes;
+    const int                          bpmCopy = currentBPM;
+
+    // Stop any prior export thread defensively (shouldn't normally happen).
+    if (exportThread != nullptr)
+    {
+        exportThread->stopThread(3000);
+        exportThread.reset();
+    }
+
+    exportThread.reset(new ExportThread(*this, destFile,
+        std::move(clipsCopy),
+        std::move(fullNotesCopy),
+        bpmCopy,
+        maxBeat));
+    exportThread->startThread();
+}
+
+void DAWComponent::onExportFinished(bool success, const juce::File& destFile)
+{
+    if (isDying.load()) return;
+
+    // ── Restore engine to live operation ────────────────────────────────────
+    vocalSynth.stop();
+    vocalSynth.setPaused(false);
+    vocalSynth.setMetronomeEnabled(false);
+
+    if (auto* dev = audioDeviceManager.getCurrentAudioDevice())
+        vocalSynth.prepareToPlay(dev->getCurrentBufferSizeSamples(),
+            dev->getCurrentSampleRate());
+
+    synthPlayer.setSource(&vocalSynth);
+    audioDeviceManager.addAudioCallback(&synthPlayer);
+
+    // Re-enable transport + hide overlay
+    isVocalBankReady.store(true);
+    refreshTransportEnabled();
+    loadingOverlay.setVisible(false);
+    repaint();
+
+    if (success)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon,
+            "Export Complete",
+            "Saved to:\n" + destFile.getFullPathName());
+    }
+    else
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+            "Export Failed",
+            "Could not write to:\n" + destFile.getFullPathName()
+            + "\n\nCheck that the folder exists and isn't read-only.");
+    }
+}
+
+// ============================================================================
+//  ExportThread — offline render loop
+// ============================================================================
+//
+//  Mirrors the live engine's "integer-beat crossing" trigger semantics:
+//  every time the chunk's start sample crosses into a new integer beat,
+//  fire the pattern notes at that beat (queueLyric → engine pendingVoices).
+//
+//  Audio is pulled via vocalSynth.getNextAudioBlock() in 1024-sample chunks.
+//  We keep rendering for `tailSeconds` after the last clip ends so any
+//  release/decay tails are captured. Output is clamped to [-1, 1] before
+//  hand-off to WavAudioFormat (which converts to int16).
+
+void DAWComponent::ExportThread::run()
+{
+    if (threadShouldExit())
+    {
+        juce::MessageManager::callAsync(
+            [ownerPtr = &owner, file = destFile]()
+            { ownerPtr->onExportFinished(false, file); });
+        return;
+    }
+
+    // ── Render parameters ───────────────────────────────────────────────────
+    const double sampleRate = 44100.0;
+    const int    blockSize = 1024;
+    const int    bitDepth = 16;
+    const int    numChannels = 2;
+    const double tailSeconds = 2.0;
+
+    const double safeBpm = (bpm > 0) ? (double)bpm : 120.0;
+    const double secondsPerBeat = 60.0 / safeBpm;
+    const double totalSeconds = maxBeat * secondsPerBeat + tailSeconds;
+    const int    totalSamples = std::max(1, (int)std::ceil(totalSeconds * sampleRate));
+
+    // ── Reset engine for offline rendering ──────────────────────────────────
+    // The audio device is detached (startExport did that), so we have
+    // exclusive access. prepareToPlay reconfigures click buffers etc. for
+    // the export sample rate.
+    owner.vocalSynth.stop();
+    owner.vocalSynth.setPaused(false);
+    owner.vocalSynth.setMetronomeEnabled(false);
+    owner.vocalSynth.prepareToPlay(blockSize, sampleRate);
+
+    // ── Allocate output buffer + render in chunks ───────────────────────────
+    juce::AudioBuffer<float> outBuf(numChannels, totalSamples);
+    outBuf.clear();
+
+    int lastTriggered = -1;
+    int produced = 0;
+
+    while (produced < totalSamples)
+    {
+        if (threadShouldExit()) break;
+
+        const int chunk = std::min(blockSize, totalSamples - produced);
+
+        // Beat at the START of this chunk. Mirrors the live timer's
+        // (int)playheadPosition > lastTriggeredBeat trigger logic.
+        const double chunkStartBeat = ((double)produced / sampleRate) / secondsPerBeat;
+        const int    beatInt = (int)std::floor(chunkStartBeat);
+
+        if (beatInt > lastTriggered)
+        {
+            for (int b = lastTriggered + 1; b <= beatInt; ++b)
+            {
+                if ((double)b >= maxBeat) break;   // past song end → tail period only
+                triggerForBeat(b);
+            }
+            lastTriggered = beatInt;
+        }
+
+        juce::AudioSourceChannelInfo info;
+        info.buffer = &outBuf;
+        info.startSample = produced;
+        info.numSamples = chunk;
+        owner.vocalSynth.getNextAudioBlock(info);
+
+        produced += chunk;
+    }
+
+    // ── Clamp output to [-1, 1] to avoid wraparound in 16-bit conversion ────
+    for (int ch = 0; ch < outBuf.getNumChannels(); ++ch)
+    {
+        juce::FloatVectorOperations::clip(
+            outBuf.getWritePointer(ch),
+            outBuf.getReadPointer(ch),
+            -1.0f, 1.0f, totalSamples);
+    }
+
+    // ── Write the WAV ───────────────────────────────────────────────────────
+    bool ok = false;
+    {
+        if (destFile.exists())
+            destFile.deleteFile();
+
+        std::unique_ptr<juce::FileOutputStream> fos = destFile.createOutputStream();
+        if (fos != nullptr)
+        {
+            // FileOutputStream defaults to read-only on some platforms after
+            // failure of an earlier open — explicitly position at zero.
+            fos->setPosition(0);
+            fos->truncate();
+
+            juce::WavAudioFormat wav;
+            // createWriterFor takes ownership of the stream regardless of
+            // success (deletes it on failure). We release() before the call.
+            std::unique_ptr<juce::AudioFormatWriter> writer(
+                wav.createWriterFor(fos.get(), sampleRate,
+                    (unsigned int)numChannels, bitDepth, {}, 0));
+
+            if (writer != nullptr)
+            {
+                fos.release();          // writer now owns the stream
+                ok = writer->writeFromAudioSampleBuffer(outBuf, 0, totalSamples);
+                // writer dtor flushes & closes the file
+            }
+        }
+    }
+
+    // ── Post completion to the message thread ───────────────────────────────
+    juce::MessageManager::callAsync(
+        [ownerPtr = &owner, file = destFile, ok]()
+        { ownerPtr->onExportFinished(ok, file); });
+}
+
+void DAWComponent::ExportThread::triggerForBeat(int globalBeat)
+{
+    // Mirrors DAWComponent::triggerNotesAtBeat — but reads only from local
+    // snapshots so the user can edit clips/patterns mid-export without races.
+    for (const auto& clip : clipsCopy)
+    {
+        const int localBeat = globalBeat - (int)clip.startBeat;
+        if (localBeat < 0 || localBeat >= (int)clip.duration) continue;
+
+        const int pIdx = clip.patternIndex;
+        if (pIdx < 0 || pIdx >= fullNotesCopy.size()) continue;
+
+        for (const auto& note : fullNotesCopy.getReference(pIdx))
+        {
+            if (note.beat == localBeat && note.lyric.isNotEmpty())
+                owner.vocalSynth.queueLyric(note.lyric, note.pitch,
+                    (double)bpm, (double)note.duration);
+        }
     }
 }

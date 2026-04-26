@@ -1,5 +1,6 @@
 #pragma once
 #include <JuceHeader.h>
+#include <memory>
 #include <random>
 
 // ---------------------------------------------------------------------------
@@ -18,6 +19,10 @@
 //  • One-pole smoothing filter to reduce concatenation harshness
 //  • Release envelope when a voice is superseded
 //  • Time-signature-aware metronome on the audio thread
+//  • Per-slot pitch shifting — fills in piano-roll rows that have no
+//    dedicated bank folder by resampling the nearest available phoneme
+//    (Lagrange interpolation, computed once per voice on the message
+//    thread before queueing to the audio thread)
 // ---------------------------------------------------------------------------
 
 class VocalSynthEngine : public juce::AudioSource
@@ -125,6 +130,22 @@ private:
         int   attackLen = 0;
         int   releaseStart = 0;    // = slotLength - releaseLen
         int   releaseLen = 0;
+
+        // Seamless loop crossfade (sustain slots only).
+        // Precomputed in buildVoice: blends buf[len-fade..len-1] into
+        // buf[0..fade-1] so the loop boundary is click-free.
+        // Empty on non-sustain slots — those fall back to the legacy xfade.
+        std::vector<float> loopXfade;
+        int loopFadeSamples = 0;
+
+        // Optional owned buffer for pitch-shifted samples. When non-null,
+        // `buffer` above points at this resampled copy (rather than into the
+        // shared voiceBank map). Lifetime-tied to the slot via shared_ptr so
+        // crossfades, loop xfades and the audio thread never see a dangling
+        // pointer. shared_ptr (not unique_ptr) so PhonemeSlot stays copyable
+        // — Voice gets copied around when moved between pendingVoices and
+        // activeVoices, and copying a shared_ptr just bumps the refcount.
+        std::shared_ptr<juce::AudioBuffer<float>> ownedBuffer;
     };
 
     struct Voice
@@ -196,17 +217,40 @@ private:
     // ── Helpers ─────────────────────────────────────────────────────────────
     Voice buildVoice(const std::vector<std::string>& phonemes,
         const std::string& noteFolder,
+        int    targetMidi,
         double secondsPerBeat,
         double durationBeats);
 
-    // Lookup a buffer by key (e.g. "AH" or "AY-ER") trying noteFolder then all pitches
-    const juce::AudioBuffer<float>* findBuffer(const std::string& key,
-        const std::string& noteFolder) const;
+    // Result of a voice-bank lookup: the buffer pointer plus the MIDI of the
+    // pitch folder it was actually found in (so callers can compute the
+    // semitone shift needed to reach the target pitch).
+    struct BufferLookup
+    {
+        const juce::AudioBuffer<float>* buffer = nullptr;
+        int srcFolderMidi = -1;
+    };
+
+    // Look up "<key>" (e.g. "AH" or "AY-ER") trying preferredFolder first,
+    // then any other available pitch folder. Returns the buffer pointer plus
+    // the MIDI of whichever folder it ended up in. {nullptr, -1} on miss.
+    BufferLookup findBuffer(const std::string& key,
+        const std::string& preferredFolder) const;
 
     bool renderVoice(Voice& v, float* outL, float* outR, int numSamples);
 
-    // Read sample: loop=true wraps with crossfade, loop=false fades to zero at end
-    static float readSample(const juce::AudioBuffer<float>* buf, int& readPos, bool loop);
+    // Read sample: loop=true wraps with crossfade, loop=false fades to zero at end.
+    // For sustain slots pass the precomputed xfade buffer for seamless looping.
+    static float readSample(const juce::AudioBuffer<float>* buf, int& readPos, bool loop,
+        const std::vector<float>* xfade = nullptr,
+        int xfadeFade = 0);
+
+    // Resample `src` to a new buffer pitch-shifted by `semitoneShift` semitones
+    // (positive = up, negative = down). Uses Lagrange interpolation. Output
+    // length is round(srcLen / 2^(shift/12)) so the entire input is consumed.
+    // Returns a fresh AudioBuffer wrapped in a shared_ptr (caller-managed
+    // lifetime; PhonemeSlot::ownedBuffer holds onto it).
+    static std::shared_ptr<juce::AudioBuffer<float>> pitchShiftBuffer(
+        const juce::AudioBuffer<float>& src, double semitoneShift);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VocalSynthEngine)
 };

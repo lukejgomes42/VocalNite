@@ -59,8 +59,7 @@ PianoRollComponent::~PianoRollComponent()
 
 bool PianoRollComponent::isBlackKey(int noteIndex) const
 {
-    int note = noteIndex % 12;
-    return (note == 1 || note == 3 || note == 6 || note == 8 || note == 10);
+    return rowIsSharp(noteIndex);
 }
 
 juce::Colour PianoRollComponent::getNoteColour(int pitch) const
@@ -136,9 +135,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
 
             for (int i = placedNotes.size() - 1; i >= 0; --i)
             {
-                if (placedNotes[i].pitch == pitch &&
-                    beat >= placedNotes[i].beat &&
-                    beat < placedNotes[i].beat + placedNotes[i].duration)
+                if (placedNotes[i].pitch == pitch && placedNotes[i].beat == beat)
                 {
                     deleteNote(placedNotes[i].pitch, placedNotes[i].beat);
                     placedNotes.remove(i);
@@ -151,7 +148,7 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
     }
 
     // ------------------------------------------------------------------
-    // Left-click: resize / edit existing / create new
+    // Left-click: drag existing note / open lyric editor / create new
     // ------------------------------------------------------------------
     int gridX = e.x - keyWidth + (int)horizontalOffset;
     int gridY = e.y - headerHeight + (int)verticalOffset;
@@ -165,35 +162,24 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
     if (beat < 0 || beat >= numBeats || pitch < 0 || pitch >= numKeys)
         return;
 
-    // Check for note resize
-    for (int i = placedNotes.size() - 1; i >= 0; --i)
-    {
-        auto& note = placedNotes.getReference(i);
-        int noteX = keyWidth + note.beat * cellWidth - (int)horizontalOffset;
-        int noteY = headerHeight + note.pitch * noteHeight - (int)verticalOffset;
-        int noteW = cellWidth * note.duration;
-
-        juce::Rectangle<int> resizeZone(noteX + noteW - 6, noteY, 6, noteHeight);
-        if (resizeZone.contains(e.x, e.y))
-        {
-            isResizingNote = true;
-            resizingNoteIndex = i;
-            return;
-        }
-    }
-
-    // Click on any cell within an existing note's duration → open lyric editor
+    // Click on an existing note → begin drag (mouseUp decides click vs. drag)
     for (int i = placedNotes.size() - 1; i >= 0; --i)
     {
         const auto& n = placedNotes[i];
-        if (n.pitch == pitch && beat >= n.beat && beat < n.beat + n.duration)
+        if (n.pitch == pitch && n.beat == beat)
         {
-            editingNoteIndex = i;
-            lyricEditor.setText(n.lyric);
-            positionLyricEditorForEditingNote();
-            lyricEditor.setVisible(true);
-            lyricEditor.grabKeyboardFocus();
-            lyricEditor.selectAll();
+            if (lyricEditor.isVisible())
+            {
+                suppressNextFocusLost = true;
+                commitCurrentLyricEdit();
+                juce::MessageManager::callAsync([this]() { suppressNextFocusLost = false; });
+            }
+            isDraggingNote = true;
+            draggingNoteIndex = i;
+            dragStartMouseX = e.x;
+            dragStartMouseY = e.y;
+            dragOriginalBeat = n.beat;
+            dragOriginalPitch = n.pitch;
             return;
         }
     }
@@ -216,38 +202,69 @@ void PianoRollComponent::mouseDown(const juce::MouseEvent& e)
 
 void PianoRollComponent::mouseUp(const juce::MouseEvent& e)
 {
-    if (isResizingNote && resizingNoteIndex >= 0)
+    if (isDraggingNote && draggingNoteIndex >= 0)
     {
-        auto& note = placedNotes[resizingNoteIndex];
-        std::string patternIdStr = std::to_string(currentPatternId);
-        std::string pitchStr = std::to_string(note.pitch);
-        std::string beatStr = std::to_string(note.beat);
-        std::string durationStr = std::to_string(note.duration);
-        const char* params[4] = { durationStr.c_str(), patternIdStr.c_str(), pitchStr.c_str(), beatStr.c_str() };
+        const int dx = std::abs(e.x - dragStartMouseX);
+        const int dy = std::abs(e.y - dragStartMouseY);
+        const bool wasDrag = (dx > 4 || dy > 4);
 
-        PGresult* res = PQexecParams(DatabaseManager::get().db(),
-            "UPDATE PatternNotes SET duration = $1 WHERE pattern_id = $2 AND pitch = $3 AND beat = $4",
-            4, nullptr, params, nullptr, nullptr, 0);
+        if (!wasDrag)
+        {
+            // Treat as a plain click — open the lyric editor
+            editingNoteIndex = draggingNoteIndex;
+            const auto& n = placedNotes[draggingNoteIndex];
+            lyricEditor.setText(n.lyric);
+            positionLyricEditorForEditingNote();
+            lyricEditor.setVisible(true);
+            lyricEditor.grabKeyboardFocus();
+            lyricEditor.selectAll();
+        }
+        else
+        {
+            // Persist the new position to DB using the original coords as key
+            const auto& n = placedNotes[draggingNoteIndex];
+            std::string patIdStr = std::to_string(currentPatternId);
+            std::string newPitch = std::to_string(n.pitch);
+            std::string newBeat = std::to_string(n.beat);
+            std::string oldPitch = std::to_string(dragOriginalPitch);
+            std::string oldBeat = std::to_string(dragOriginalBeat);
+            const char* params[5] = { newPitch.c_str(), newBeat.c_str(),
+                                      patIdStr.c_str(),
+                                      oldPitch.c_str(), oldBeat.c_str() };
+            PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                "UPDATE PatternNotes SET pitch=$1, beat=$2 "
+                "WHERE pattern_id=$3 AND pitch=$4 AND beat=$5",
+                5, nullptr, params, nullptr, nullptr, 0);
+            if (PQresultStatus(res) != PGRES_COMMAND_OK)
+                DBG("Note move error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
+            PQclear(res);
+        }
 
-        if (PQresultStatus(res) != PGRES_COMMAND_OK)
-            DBG("Note resize error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
-        PQclear(res);
-
-        isResizingNote = false;
-        resizingNoteIndex = -1;
-        repaint();
+        isDraggingNote = false;
+        draggingNoteIndex = -1;
     }
 }
 
 void PianoRollComponent::mouseDrag(const juce::MouseEvent& e)
 {
-    if (isResizingNote && resizingNoteIndex >= 0)
+    if (!isDraggingNote || draggingNoteIndex < 0)
+        return;
+
+    const int gridX = e.x - keyWidth + (int)horizontalOffset;
+    const int gridY = e.y - headerHeight + (int)verticalOffset;
+
+    const int newBeat = juce::jlimit(0, numBeats - 1, gridX / cellWidth);
+    const int newPitch = juce::jlimit(0, numKeys - 1, gridY / noteHeight);
+
+    auto& n = placedNotes.getReference(draggingNoteIndex);
+    if (n.beat != newBeat || n.pitch != newPitch)
     {
-        int gridX = e.x - keyWidth + (int)horizontalOffset;
-        int newEnd = gridX / cellWidth + 1;
-        int startBeat = placedNotes[resizingNoteIndex].beat;
-        int newDuration = std::max(1, newEnd - startBeat);
-        placedNotes.getReference(resizingNoteIndex).duration = newDuration;
+        n.beat = newBeat;
+        n.pitch = newPitch;
+
+        if (lyricEditor.isVisible())
+            positionLyricEditorForEditingNote();
+
         repaint();
     }
 }
@@ -305,29 +322,35 @@ void PianoRollComponent::paint(juce::Graphics& g)
             int y = headerHeight + i * noteHeight - scrolledY;
             if (y > getHeight()) break;
 
-            bool black = isBlackKey(i);
+            const bool sharp = rowIsSharp(i);
+            const bool bankNote = rowIsBankNote(i);
 
-            // White/black key background
-            g.setColour(black ? juce::Colours::black : juce::Colours::white);
+            // Key background: F# rows darker, bank-folder rows pinker
+            juce::Colour keyBg = sharp ? juce::Colour(18, 8, 32)
+                : juce::Colour(35, 15, 58);
+            if (bankNote) keyBg = keyBg.brighter(0.18f);
+            g.setColour(keyBg);
             g.fillRect(0, y, keyWidth, noteHeight);
 
-            // Key border
-            g.setColour(juce::Colours::darkgrey);
-            g.drawRect(0, y, keyWidth, noteHeight, 1);
+            // Subtle separator line
+            g.setColour(juce::Colour(60, 30, 90));
+            g.drawLine(0.0f, (float)(y + noteHeight - 1),
+                (float)keyWidth, (float)(y + noteHeight - 1), 1.0f);
 
-            // Octave label on Cs
-            if (!black)
+            // Bank-note accent strip on left edge
+            if (bankNote)
             {
-                int octave = (numKeys - 1 - i) / 12;
-                int noteInOctave = (numKeys - 1 - i) % 12;
-                if (noteInOctave == 0)
-                {
-                    g.setColour(juce::Colours::black);
-                    g.setFont(10.0f);
-                    g.drawText("C" + juce::String(octave), 2, y, keyWidth - 4, noteHeight,
-                        juce::Justification::centredLeft);
-                }
+                g.setColour(juce::Colours::hotpink.withAlpha(0.7f));
+                g.fillRect(0, y + 2, 3, noteHeight - 4);
             }
+
+            // Note name label
+            g.setColour(bankNote ? juce::Colours::hotpink
+                : (sharp ? juce::Colour(160, 120, 200)
+                    : juce::Colour(200, 170, 230)));
+            g.setFont(juce::Font(10.0f, sharp ? juce::Font::plain : juce::Font::bold));
+            g.drawText(kRowNames[i], 6, y, keyWidth - 8, noteHeight,
+                juce::Justification::centredLeft);
         }
     }
 
@@ -371,23 +394,19 @@ void PianoRollComponent::paint(juce::Graphics& g)
             if (x + cellWidth < keyWidth || x > getWidth()) continue;
             if (y + noteHeight < headerHeight || y > getHeight()) continue;
 
-            int noteW = cellWidth * note.duration;
             g.setColour(getNoteColour(note.pitch));
             g.fillRoundedRectangle((float)(x + 1), (float)(y + 1),
-                (float)(noteW - 2), (float)(noteHeight - 2), 3.0f);
+                (float)(cellWidth - 2), (float)(noteHeight - 2), 3.0f);
             g.setColour(juce::Colours::white.withAlpha(0.4f));
             g.drawRoundedRectangle((float)(x + 1), (float)(y + 1),
-                (float)(noteW - 2), (float)(noteHeight - 2), 3.0f, 1.0f);
+                (float)(cellWidth - 2), (float)(noteHeight - 2), 3.0f, 1.0f);
             if (note.lyric.isNotEmpty())
             {
                 g.setColour(juce::Colours::white);
                 g.setFont(10.0f);
-                g.drawText(note.lyric, x + 2, y + 1, noteW - 4, noteHeight - 2,
+                g.drawText(note.lyric, x + 2, y + 1, cellWidth - 4, noteHeight - 2,
                     juce::Justification::centred);
             }
-            // Resize handle on right edge
-            g.setColour(juce::Colours::white.withAlpha(0.3f));
-            g.fillRect(x + noteW - 4, y + 2, 3, noteHeight - 4);
         }
     }
 
@@ -424,18 +443,23 @@ void PianoRollComponent::resized()
 {
     constexpr int scrollBarThickness = 12;
 
+    // ── Dynamic row height ────────────────────────────────────────────────
+    // 15 rows × 28px = 420px. On a 600px+ window, that leaves dead space at
+    // the bottom. Recompute noteHeight to fill the available grid area while
+    // staying within sensible bounds.
+    const int availableH = std::max(0, getHeight() - headerHeight - scrollBarThickness);
+    const int idealH = (numKeys > 0) ? availableH / numKeys : 28;
+    noteHeight = juce::jlimit(28, 56, idealH);
+
     verticalScroll.setBounds(getWidth() - scrollBarThickness, headerHeight,
         scrollBarThickness, getHeight() - headerHeight - scrollBarThickness);
     horizontalScroll.setBounds(keyWidth, getHeight() - scrollBarThickness,
         getWidth() - keyWidth - scrollBarThickness, scrollBarThickness);
 
-    // Range limits describe the full virtual content; clamp/push viewport state
-    // into the scrollbars below.
     verticalScroll.setRangeLimits(0.0, (double)(numKeys * noteHeight));
     horizontalScroll.setRangeLimits(0.0, (double)(numBeats * cellWidth));
 
-    // First valid resize: centre the view on C4 so the user isn't dropped into
-    // the useless top-of-range region.
+    // First valid resize: centre on C4
     if (!initialScrollApplied && getWidth() > 0 && getHeight() > 0)
     {
         centreVerticallyOnMidi(60);
@@ -443,6 +467,10 @@ void PianoRollComponent::resized()
     }
 
     clampOffsetsToViewport();
+
+    // Reposition the lyric editor if it's open — its row coords depend on noteHeight
+    if (lyricEditor.isVisible())
+        positionLyricEditorForEditingNote();
 }
 
 void PianoRollComponent::saveNote(int pitch, int beat, const juce::String& lyric, int duration)
@@ -582,11 +610,16 @@ void PianoRollComponent::clampOffsetsToViewport()
 
 void PianoRollComponent::centreVerticallyOnMidi(int midi)
 {
-    // midi = (numKeys - 1 - gridPitch) + 12  =>  gridPitch = (numKeys + 11) - midi
-    const int gridPitch = juce::jlimit(0, numKeys - 1, (numKeys + 11) - midi);
-    const double targetY = (double)(gridPitch * noteHeight);
-    const double vh = (double)getViewportHeight();
+    // Find the row whose MIDI pitch is closest to the requested value.
+    int bestRow = 0, bestDist = 999;
+    for (int i = 0; i < numKeys; ++i)
+    {
+        int d = std::abs(kRowMidi[i] - midi);
+        if (d < bestDist) { bestDist = d; bestRow = i; }
+    }
 
+    const double targetY = (double)(bestRow * noteHeight);
+    const double vh = (double)getViewportHeight();
     double desired = targetY - (vh * 0.5) + (noteHeight * 0.5);
     desired = juce::jlimit(0.0, getMaxVerticalOffset(), desired);
 
@@ -652,9 +685,7 @@ void PianoRollComponent::positionLyricEditorForEditingNote()
     const auto& n = placedNotes[editingNoteIndex];
     const int x = keyWidth + n.beat * cellWidth - (int)horizontalOffset;
     const int y = headerHeight + n.pitch * noteHeight - (int)verticalOffset;
-    // Use the note's full duration so the editor covers stretched notes.
-    const int w = std::max(cellWidth, cellWidth * n.duration);
-    lyricEditor.setBounds(x, y, w, noteHeight);
+    lyricEditor.setBounds(x, y, cellWidth, noteHeight);
 }
 
 int PianoRollComponent::findNoteIndexAtMouse(const juce::MouseEvent& e) const
@@ -669,22 +700,11 @@ int PianoRollComponent::findNoteIndexAtMouse(const juce::MouseEvent& e) const
     if (beat < 0 || beat >= numBeats || pitch < 0 || pitch >= numKeys)
         return -1;
 
-    // Resize-zone hits count as "on that note"
+    // Inside the note's cell
     for (int i = placedNotes.size() - 1; i >= 0; --i)
     {
         const auto& n = placedNotes[i];
-        const int noteX = keyWidth + n.beat * cellWidth - (int)horizontalOffset;
-        const int noteY = headerHeight + n.pitch * noteHeight - (int)verticalOffset;
-        const int noteW = cellWidth * n.duration;
-        juce::Rectangle<int> resizeZone(noteX + noteW - 6, noteY, 6, noteHeight);
-        if (resizeZone.contains(e.x, e.y)) return i;
-    }
-
-    // Inside the note's body (covers multi-beat notes across their duration)
-    for (int i = placedNotes.size() - 1; i >= 0; --i)
-    {
-        const auto& n = placedNotes[i];
-        if (n.pitch == pitch && beat >= n.beat && beat < n.beat + n.duration)
+        if (n.pitch == pitch && n.beat == beat)
             return i;
     }
 
