@@ -23,6 +23,11 @@ public:
         const juce::StringArray& words,
         const juce::StringArray& pitchNames);
 
+    // Update only the displayed pattern name (window-title-style refresh) without
+    // resetting the user's current word-scroll position or the cached word list.
+    // Used when a pattern is renamed while it's being inspected.
+    void setPatternName(const juce::String& patternName);
+
     void clearPatternData();
 
     // Legacy single-shot update (kept for back-compat; still usable if some

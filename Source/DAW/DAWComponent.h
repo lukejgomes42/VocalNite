@@ -303,15 +303,20 @@ private:
     class ResourceLoader : public juce::Thread
     {
     public:
-        ResourceLoader(DAWComponent& owner, const juce::File& resources)
+        ResourceLoader(DAWComponent& owner,
+            const juce::File& resources,
+            const juce::File& initialBankFolder)
             : juce::Thread("VocalNite Resource Loader"),
-            owner(owner), resourcesDir(resources) {
+            owner(owner),
+            resourcesDir(resources),
+            bankFolderToLoad(initialBankFolder) {
         }
 
         void run() override;
     private:
         DAWComponent& owner;
         juce::File    resourcesDir;
+        juce::File    bankFolderToLoad;   // resolved at construction time on the message thread
     };
 
     std::unique_ptr<ResourceLoader> resourceLoader;
@@ -515,14 +520,16 @@ private:
             juce::Array<PlacedClip> clipsCopy,
             juce::Array<juce::Array<FullNote>> fullNotesCopy,
             int bpmCopy,
-            double maxBeatCopy)
+            double maxBeatCopy,
+            double sampleRateCopy)
             : juce::Thread("VocalNite Export"),
             owner(owner),
             destFile(destFile),
             clipsCopy(std::move(clipsCopy)),
             fullNotesCopy(std::move(fullNotesCopy)),
             bpm(bpmCopy),
-            maxBeat(maxBeatCopy) {
+            maxBeat(maxBeatCopy),
+            sampleRate(sampleRateCopy) {
         }
 
         void run() override;
@@ -539,6 +546,10 @@ private:
         juce::Array<juce::Array<FullNote>> fullNotesCopy;
         int    bpm;
         double maxBeat;
+        double sampleRate;   // captured from the live audio device — keeps
+        // export pitch in sync with what the user heard
+        // during playback (engine reads voice bank WAVs
+        // by sample-index, so rate determines effective pitch).
     };
 
     std::unique_ptr<ExportThread> exportThread;

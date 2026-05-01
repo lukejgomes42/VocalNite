@@ -93,6 +93,12 @@ void SynthesisInspector::setPatternData(const juce::String& patternName,
     showCurrentWord();
 }
 
+void SynthesisInspector::setPatternName(const juce::String& patternName)
+{
+    currentPatternName = patternName;
+    patternNameLabel.setText("Pattern: " + patternName, juce::dontSendNotification);
+}
+
 void SynthesisInspector::clearPatternData()
 {
     currentPatternName = "";

@@ -20,11 +20,13 @@ public:
 
     //==============================================================================
     void paint(juce::Graphics&) override;
+    void paintOverChildren(juce::Graphics&) override;
     void resized() override;
 
     // Mouse hover callbacks (for buttons)
     void mouseEnter(const juce::MouseEvent& event);
     void mouseExit(const juce::MouseEvent& event);
+    void mouseDown(const juce::MouseEvent& event) override;
 
 private:
     juce::Label titleLabel;
@@ -34,6 +36,31 @@ private:
 
     void showAuthDialog(const juce::String& type);
     void showVerifyDialog();
+
+    // Logo swap-in
+    juce::Image logoImage;
+    bool        showLogo = false;
+    juce::Rectangle<int> titleHitArea;
+    void        loadLogoImage();
+
+    // Sparkle / flash animation
+    struct Sparkle
+    {
+        float x = 0.0f, y = 0.0f;
+        float vx = 0.0f, vy = 0.0f;
+        float age = 0.0f;
+        float lifetime = 1.0f;
+        float size = 3.0f;
+        juce::Colour colour;
+    };
+    juce::Array<Sparkle> sparkles;
+    float        logoAlpha = 0.0f;          // 0 -> 1 fade-in for the logo
+    bool         flashActive = false;
+    juce::uint32 flashStartTimeMs = 0;
+
+    void triggerSwapAnimation();
+    void spawnSparkleBurst(int count);
+    void drawSparkle(juce::Graphics& g, const Sparkle& s) const;
 
     // Animation
     GlowLines glowLines{ 5 };

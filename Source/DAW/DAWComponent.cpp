@@ -394,7 +394,51 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
     // until the voice bank is ready.
     if (resourcesDir != juce::File())
     {
-        resourceLoader.reset(new ResourceLoader(*this, resourcesDir));
+        // Resolve the project's persisted voice bank BEFORE the worker thread
+        // starts loading so we boot directly into the user's last choice
+        // instead of always loading Aaron and silently desyncing the
+        // selector's "ACTIVE" badge from what's actually loaded. This is a
+        // tiny synchronous DB read on the message thread; the full
+        // loadProjectSettings() that runs later still re-reads the same
+        // column for BPM/timesig/volume.
+        juce::File initialBankFolder = voiceBankRoot.getChildFile("Aaron");   // safe default
+        if (currentProjectId >= 0)
+        {
+            try
+            {
+                std::string pidStr = std::to_string(currentProjectId);
+                const char* params[1] = { pidStr.c_str() };
+                PGresult* res = PQexecParams(DatabaseManager::get().db(),
+                    "SELECT voice_bank_index FROM Projects WHERE project_id = $1",
+                    1, nullptr, params, nullptr, nullptr, 0);
+
+                if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1)
+                {
+                    const char* vbStr = PQgetvalue(res, 0, 0);
+                    if (vbStr != nullptr && vbStr[0] != '\0' && std::atoi(vbStr) == 1)
+                    {
+                        // 1 == utau. Only honour the saved choice if the folder
+                        // actually exists on disk — otherwise fall through to
+                        // Aaron silently (e.g. user moved the bank between
+                        // sessions). currentVoiceBankId stays in sync with
+                        // what we'll actually load.
+                        auto utauFolder = voiceBankRoot.getChildFile("UTAU");
+                        if (utauFolder.isDirectory())
+                        {
+                            initialBankFolder = utauFolder;
+                            currentVoiceBankId = "utau";
+                        }
+                    }
+                }
+                PQclear(res);
+            }
+            catch (const std::exception& e)
+            {
+                DBG("Initial voice bank resolution error: " + juce::String(e.what()));
+            }
+        }
+
+        resourceLoader.reset(new ResourceLoader(*this, resourcesDir, initialBankFolder));
         resourceLoader->startThread();
     }
     else
@@ -457,6 +501,17 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
                 {
                     DBG("Pattern rename error: " + juce::String(e.what()));
                 }
+            }
+
+            // If the renamed pattern is currently being inspected, refresh the
+            // inspector's window title and the in-panel "Pattern: <name>" label
+            // so they don't drift from the new name. Uses setPatternName (not
+            // setPatternData) to preserve the user's current word-scroll
+            // position through the inspector — only the displayed name updates.
+            if (inspectorWindow != nullptr && inspectedPatternIndex == editingPatternIndex)
+            {
+                inspectorWindow->setName("Synthesis Inspector: " + newName);
+                synthInspector.setPatternName(newName);
             }
 
             editingPatternIndex = -1;
@@ -3094,9 +3149,14 @@ void DAWComponent::ResourceLoader::run()
     // Stage 2: voice bank (slow — ~3400 WAV files, several seconds).
     if (!threadShouldExit())
     {
-        // The Aaron bank is the initial default. UTAU (and any others) can be
-        // hot-swapped in later via DAWComponent::openVoiceBankSelector().
-        auto bankDir = resourcesDir.getChildFile("VoiceBank").getChildFile("Aaron");
+        // Use the bank folder resolved at construction time (DAWComponent's
+        // ctor reads voice_bank_index from the Projects row before starting
+        // this thread). For fresh projects this is Aaron; for projects that
+        // were last saved on UTAU it's UTAU. Defensive fallback to Aaron if
+        // the resolved folder somehow vanished between resolution and now.
+        auto bankDir = bankFolderToLoad.isDirectory()
+            ? bankFolderToLoad
+            : resourcesDir.getChildFile("VoiceBank").getChildFile("Aaron");
         owner.vocalSynth.loadVoiceBank(bankDir);
 
         juce::MessageManager::callAsync([ownerPtr = &owner]()
@@ -4135,6 +4195,22 @@ void DAWComponent::exportTimelineAsWav()
 
 void DAWComponent::startExport(const juce::File& destFile)
 {
+    // ── Capture the live device's sample rate BEFORE detaching ──────────────
+    // The synth engine reads voice-bank WAVs by sample-index increment (no
+    // resampling), so the effective playback pitch of every phoneme is rate-
+    // dependent. Rendering at a different rate than the live device would
+    // pitch-shift the export by ~log2(rateRatio) octaves relative to what
+    // the user just heard. Capturing the device rate keeps export and live
+    // bit-equivalent in feel + pitch. Falls back to 44100 if the device is
+    // somehow unavailable.
+    double exportSampleRate = 44100.0;
+    if (auto* dev = audioDeviceManager.getCurrentAudioDevice())
+    {
+        const double devRate = dev->getCurrentSampleRate();
+        if (devRate > 0.0)
+            exportSampleRate = devRate;
+    }
+
     // ── Halt live transport so nothing fights the offline renderer ──────────
     if (isPlaying)
     {
@@ -4187,7 +4263,8 @@ void DAWComponent::startExport(const juce::File& destFile)
         std::move(clipsCopy),
         std::move(fullNotesCopy),
         bpmCopy,
-        maxBeat));
+        maxBeat,
+        exportSampleRate));
     exportThread->startThread();
 }
 
@@ -4252,7 +4329,12 @@ void DAWComponent::ExportThread::run()
     }
 
     // ── Render parameters ───────────────────────────────────────────────────
-    const double sampleRate = 44100.0;
+    // sampleRate was captured from the live device in startExport so the
+    // export plays back the voice bank at the same effective pitch the user
+    // heard live (the engine reads sample buffers by index increment with no
+    // resampling, so any rate change shifts pitch). Defensive fallback to
+    // 44100 if the captured value was invalid.
+    const double sampleRate = (this->sampleRate > 0.0) ? this->sampleRate : 44100.0;
     const int    blockSize = 1024;
     const int    bitDepth = 16;
     const int    numChannels = 2;
