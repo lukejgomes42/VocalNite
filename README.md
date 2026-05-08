@@ -151,7 +151,11 @@ Login screen — animated star-field backdrop, Sign Up / Login
 Project Manager Page - Recent Projects, New Project & Open Project, Logout
 <img width="610" height="409" alt="image" src="https://github.com/user-attachments/assets/c860fa81-1b34-4a13-87f5-0fa9a449a6d6" />
 
+DAW — Timeline view — pattern browser, track lanes, placed clips, playhead, transport bar
+<img width="1278" height="720" alt="image" src="https://github.com/user-attachments/assets/a012fe6b-58f1-4306-99b4-b7bacb3e6bac" />
 
+Piano roll — 15-row note grid with inline lyric editor and note resize
+<img width="1247" height="582" alt="image" src="https://github.com/user-attachments/assets/bc4b96e9-12cb-48aa-ab3c-9b67913d47b4" />
 
 ## Acknowledgements
 
