@@ -143,6 +143,16 @@ namespace VocalNiteSecrets
 
 ---
 
+## Screenshots
+
+Login screen — animated star-field backdrop, Sign Up / Login
+<img width="638" height="427" alt="image" src="https://github.com/user-attachments/assets/2bc89ba6-489f-4452-97b7-d104c7ddf1ab" />
+
+Project Manager Page - Recent Projects, New Project & Open Project, Logout
+<img width="610" height="409" alt="image" src="https://github.com/user-attachments/assets/c860fa81-1b34-4a13-87f5-0fa9a449a6d6" />
+
+
+
 ## Acknowledgements
 
 - **[CMU Pronouncing Dictionary](https://github.com/cmusphinx/cmudict)** — developed and maintained by Carnegie Mellon University. Used for word-to-ARPAbet phoneme lookup.
