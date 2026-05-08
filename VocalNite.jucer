@@ -3,42 +3,6 @@
 <JUCERPROJECT id="HCW0Sa" name="VocalNite" projectType="guiapp" useAppConfig="0"
               addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1">
   <MAINGROUP id="RtbBsR" name="VocalNite">
-    <GROUP id="{99782403-F2A7-1016-0FF6-980017276E8D}" name="External">
-      <GROUP id="{7DCC9CAE-1D25-245F-ACB8-98ABFF92FA37}" name="sqlite">
-        <FILE id="Mulc1n" name="sqlite3.c" compile="1" resource="0" file="External/sqlite/sqlite3.c"/>
-        <FILE id="WJE4FE" name="sqlite3.h" compile="0" resource="0" file="External/sqlite/sqlite3.h"/>
-        <FILE id="ACMJh5" name="sqlite3ext.h" compile="0" resource="0" file="External/sqlite/sqlite3ext.h"/>
-      </GROUP>
-      <GROUP id="{6227E49E-998F-8355-A2A2-B7C1F0BD3E20}" name="SQLiteCpp">
-        <GROUP id="{305C1C9A-7F60-A51B-AF45-7D19EE25ED3F}" name="include">
-          <GROUP id="{0B5FBFF8-89A5-D5D4-661B-E5E8D67F5EA6}" name="SQLiteCpp">
-            <FILE id="wMRR8e" name="Assertion.h" compile="0" resource="0" file="External/SQLiteCpp/include/SQLiteCpp/Assertion.h"/>
-            <FILE id="gs5FvY" name="Backup.h" compile="0" resource="0" file="External/SQLiteCpp/include/SQLiteCpp/Backup.h"/>
-            <FILE id="v1Ic81" name="Column.h" compile="0" resource="0" file="External/SQLiteCpp/include/SQLiteCpp/Column.h"/>
-            <FILE id="C2cQ59" name="Database.h" compile="0" resource="0" file="External/SQLiteCpp/include/SQLiteCpp/Database.h"/>
-            <FILE id="dau0d3" name="Exception.h" compile="0" resource="0" file="External/SQLiteCpp/include/SQLiteCpp/Exception.h"/>
-            <FILE id="SStVkQ" name="ExecuteMany.h" compile="0" resource="0" file="External/SQLiteCpp/include/SQLiteCpp/ExecuteMany.h"/>
-            <FILE id="w5ECg8" name="Savepoint.h" compile="0" resource="0" file="External/SQLiteCpp/include/SQLiteCpp/Savepoint.h"/>
-            <FILE id="lnwbwQ" name="SQLiteCpp.h" compile="0" resource="0" file="External/SQLiteCpp/include/SQLiteCpp/SQLiteCpp.h"/>
-            <FILE id="O5Pbj0" name="SQLiteCppExport.h" compile="0" resource="0"
-                  file="External/SQLiteCpp/include/SQLiteCpp/SQLiteCppExport.h"/>
-            <FILE id="Weitz4" name="Statement.h" compile="0" resource="0" file="External/SQLiteCpp/include/SQLiteCpp/Statement.h"/>
-            <FILE id="tvzQVw" name="Transaction.h" compile="0" resource="0" file="External/SQLiteCpp/include/SQLiteCpp/Transaction.h"/>
-            <FILE id="lOxJmt" name="Utils.h" compile="0" resource="0" file="External/SQLiteCpp/include/SQLiteCpp/Utils.h"/>
-            <FILE id="UgXQe1" name="VariadicBind.h" compile="0" resource="0" file="External/SQLiteCpp/include/SQLiteCpp/VariadicBind.h"/>
-          </GROUP>
-        </GROUP>
-        <GROUP id="{5AE84874-5E0B-BA49-085D-0A563EA18B31}" name="src">
-          <FILE id="oqOuRD" name="Backup.cpp" compile="1" resource="0" file="External/SQLiteCpp/src/Backup.cpp"/>
-          <FILE id="U5Bnh9" name="Column.cpp" compile="1" resource="0" file="External/SQLiteCpp/src/Column.cpp"/>
-          <FILE id="IWCOZ2" name="Database.cpp" compile="1" resource="0" file="External/SQLiteCpp/src/Database.cpp"/>
-          <FILE id="BKRaKx" name="Exception.cpp" compile="1" resource="0" file="External/SQLiteCpp/src/Exception.cpp"/>
-          <FILE id="KAbuc0" name="Savepoint.cpp" compile="1" resource="0" file="External/SQLiteCpp/src/Savepoint.cpp"/>
-          <FILE id="WM0Cqt" name="Statement.cpp" compile="1" resource="0" file="External/SQLiteCpp/src/Statement.cpp"/>
-          <FILE id="muQV4H" name="Transaction.cpp" compile="1" resource="0" file="External/SQLiteCpp/src/Transaction.cpp"/>
-        </GROUP>
-      </GROUP>
-    </GROUP>
     <GROUP id="{2B266A99-55D2-0462-D5EC-F49FA08C7201}" name="Resources">
       <GROUP id="{26273908-35A7-208B-F6DB-A2CB2A3C116C}" name="database">
         <FILE id="vcF2PP" name="vocalnitedb.db" compile="0" resource="1" file="Resources/database/vocalnitedb.db"/>
@@ -138,9 +102,9 @@
     <VS2026 targetFolder="Builds/VisualStudio2026" extraLinkerFlags="libpq.lib&#10;libcurl.lib"
             smallIcon="lob8Y1" bigIcon="lob8Y1">
       <CONFIGURATIONS>
-        <CONFIGURATION isDebug="1" name="Debug" targetName="VocalNite" headerPath="../../Source/Database&#10;../../External/sqlite&#10;../../External/SQLiteCpp/include&#10;C:\vcpkg\installed\x64-windows\include"
+        <CONFIGURATION isDebug="1" name="Debug" targetName="VocalNite" headerPath="../../Source/Database&#10;C:\vcpkg\installed\x64-windows\include"
                        libraryPath="C:\vcpkg\installed\x64-windows\lib"/>
-        <CONFIGURATION isDebug="0" name="Release" targetName="VocalNite" headerPath="../../Source/Database&#10;../../External/sqlite&#10;../../External/SQLiteCpp/include"/>
+        <CONFIGURATION isDebug="0" name="Release" targetName="VocalNite" headerPath="../../Source/Database"/>
       </CONFIGURATIONS>
       <MODULEPATHS>
         <MODULEPATH id="juce_core" path="../JUCE/modules"/>
