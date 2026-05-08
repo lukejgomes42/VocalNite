@@ -1,14 +1,21 @@
-// Source/Educational/TooltipRegistry.h
 #pragma once
 #include <JuceHeader.h>
 #include <map>
-#include <string>
 
-class TooltipRegistry {
+// =============================================================================
+//  TooltipRegistry
+//  Static lookup table mapping component IDs to hover-tip strings.
+//  Used by DAWComponent::updateTooltips() and PianoRollComponent to wire
+//  tooltips onto controls. All strings are plain ASCII.
+// =============================================================================
+class TooltipRegistry
+{
 public:
-    static juce::String get(const juce::String& componentID) {
-        static std::map<juce::String, juce::String> tips = {
-            // DAW Page
+    static juce::String get(const juce::String& componentID)
+    {
+        static const std::map<juce::String, juce::String> tips =
+        {
+            // ── DAW ──────────────────────────────────────────────────────────
             { "addPattern",
               "ADD PATTERN: Creates a new vocal pattern block. "
               "Patterns hold the lyrics and notes that get converted "
@@ -43,7 +50,7 @@ public:
               "SNAP: When on, patterns snap to the nearest beat grid "
               "position, keeping everything in time." },
 
-            // Piano Roll
+            // ── Piano Roll ───────────────────────────────────────────────────
             { "pianoRollTile",
               "PIANO ROLL TILE: Click to place a note. The row "
               "determines pitch, the column determines timing. "
@@ -54,7 +61,7 @@ public:
               "converts it into phonemes using the ARPAbet system and "
               "maps them to audio samples in the voice bank." },
 
-            // Project Manager
+            // ── Project Manager ──────────────────────────────────────────────
             { "newProject",
               "NEW PROJECT: Starts a fresh workspace. Your BPM, "
               "tracks, patterns, and lyrics will all be saved "

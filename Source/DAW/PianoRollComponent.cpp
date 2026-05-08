@@ -447,7 +447,7 @@ void PianoRollComponent::resized()
     // 15 rows × 28px = 420px. On a 600px+ window, that leaves dead space at
     // the bottom. Recompute noteHeight to fill the available grid area while
     // staying within sensible bounds.
-    const int availableH = std::max(0, getHeight() - headerHeight - scrollBarThickness);
+    const int availableH = juce::jmax(0, getHeight() - headerHeight - scrollBarThickness);
     const int idealH = (numKeys > 0) ? availableH / numKeys : 28;
     noteHeight = juce::jlimit(28, 56, idealH);
 
@@ -567,25 +567,25 @@ void PianoRollComponent::applyTooltips(bool /*eduEnabled — ignored*/)
 int PianoRollComponent::getViewportWidth() const
 {
     constexpr int scrollBarThickness = 12;
-    return std::max(0, getWidth() - keyWidth - scrollBarThickness);
+    return juce::jmax(0, getWidth() - keyWidth - scrollBarThickness);
 }
 
 int PianoRollComponent::getViewportHeight() const
 {
     constexpr int scrollBarThickness = 12;
-    return std::max(0, getHeight() - headerHeight - scrollBarThickness);
+    return juce::jmax(0, getHeight() - headerHeight - scrollBarThickness);
 }
 
 double PianoRollComponent::getMaxVerticalOffset() const
 {
     const double total = (double)(numKeys * noteHeight);
-    return std::max(0.0, total - (double)getViewportHeight());
+    return juce::jmax(0.0, total - (double)getViewportHeight());
 }
 
 double PianoRollComponent::getMaxHorizontalOffset() const
 {
     const double total = (double)(numBeats * cellWidth);
-    return std::max(0.0, total - (double)getViewportWidth());
+    return juce::jmax(0.0, total - (double)getViewportWidth());
 }
 
 void PianoRollComponent::clampOffsetsToViewport()
@@ -600,12 +600,12 @@ void PianoRollComponent::clampOffsetsToViewport()
     // Push the current viewport state into the scrollbars. The viewport size
     // (second arg of setCurrentRange) controls the thumb size; clamp it so it
     // can never exceed the total content range.
-    const double vSize = std::min((double)getViewportHeight(),
+    const double vSize = juce::jmin((double)getViewportHeight(),
         (double)(numKeys * noteHeight));
-    const double hSize = std::min((double)getViewportWidth(),
+    const double hSize = juce::jmin((double)getViewportWidth(),
         (double)(numBeats * cellWidth));
-    verticalScroll.setCurrentRange(verticalOffset, std::max(1.0, vSize));
-    horizontalScroll.setCurrentRange(horizontalOffset, std::max(1.0, hSize));
+    verticalScroll.setCurrentRange(verticalOffset, juce::jmax(1.0, vSize));
+    horizontalScroll.setCurrentRange(horizontalOffset, juce::jmax(1.0, hSize));
 }
 
 void PianoRollComponent::centreVerticallyOnMidi(int midi)

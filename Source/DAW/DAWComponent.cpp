@@ -1,11 +1,31 @@
 #include <JuceHeader.h>
 #include "DAWComponent.h"
 #include "../Database/DatabaseManager.h"
-#include "../Audio/VocalSynthEngine.h"
-#include "../Educational/EducationalModeManager.h"
-#include "../Educational/TooltipRegistry.h"
 #include <libpq-fe.h>
 #include <unordered_set>
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Layout constants — shared by paint(), resized(), mouseDown/Drag/Up(),
+//  getTooltip(), addPattern(), and mouseWheelMove(). Defined once here so
+//  they can't drift apart between methods.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace
+{
+    constexpr int kMenuBarHeight = 25;
+    constexpr int kToolbarHeight = 40;
+    constexpr int kToolbar2Height = 35;
+    constexpr int kGridTop = kMenuBarHeight + kToolbarHeight + kToolbar2Height;
+    constexpr int kPatternWidth = 150;
+    constexpr int kTrackHeaderWidth = 80;
+    constexpr int kGridLeft = kPatternWidth + kTrackHeaderWidth;   // 230
+    constexpr int kTrackHeight = 40;
+    constexpr int kScrollBarWidth = 12;
+    constexpr int kPatternHeight = 36;
+
+    // Derived layout values
+    constexpr int kTrackAreaTop = kGridTop + 20;
+    constexpr int kPatternAreaTop = kGridTop + 28;
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 //  TransportButtonLookAndFeel
@@ -394,51 +414,7 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
     // until the voice bank is ready.
     if (resourcesDir != juce::File())
     {
-        // Resolve the project's persisted voice bank BEFORE the worker thread
-        // starts loading so we boot directly into the user's last choice
-        // instead of always loading Aaron and silently desyncing the
-        // selector's "ACTIVE" badge from what's actually loaded. This is a
-        // tiny synchronous DB read on the message thread; the full
-        // loadProjectSettings() that runs later still re-reads the same
-        // column for BPM/timesig/volume.
-        juce::File initialBankFolder = voiceBankRoot.getChildFile("Aaron");   // safe default
-        if (currentProjectId >= 0)
-        {
-            try
-            {
-                std::string pidStr = std::to_string(currentProjectId);
-                const char* params[1] = { pidStr.c_str() };
-                PGresult* res = PQexecParams(DatabaseManager::get().db(),
-                    "SELECT voice_bank_index FROM Projects WHERE project_id = $1",
-                    1, nullptr, params, nullptr, nullptr, 0);
-
-                if (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1)
-                {
-                    const char* vbStr = PQgetvalue(res, 0, 0);
-                    if (vbStr != nullptr && vbStr[0] != '\0' && std::atoi(vbStr) == 1)
-                    {
-                        // 1 == utau. Only honour the saved choice if the folder
-                        // actually exists on disk — otherwise fall through to
-                        // Aaron silently (e.g. user moved the bank between
-                        // sessions). currentVoiceBankId stays in sync with
-                        // what we'll actually load.
-                        auto utauFolder = voiceBankRoot.getChildFile("UTAU");
-                        if (utauFolder.isDirectory())
-                        {
-                            initialBankFolder = utauFolder;
-                            currentVoiceBankId = "utau";
-                        }
-                    }
-                }
-                PQclear(res);
-            }
-            catch (const std::exception& e)
-            {
-                DBG("Initial voice bank resolution error: " + juce::String(e.what()));
-            }
-        }
-
-        resourceLoader.reset(new ResourceLoader(*this, resourcesDir, initialBankFolder));
+        resourceLoader.reset(new ResourceLoader(*this, resourcesDir));
         resourceLoader->startThread();
     }
     else
@@ -501,17 +477,6 @@ DAWComponent::DAWComponent(const juce::String& projectName, int projectId, const
                 {
                     DBG("Pattern rename error: " + juce::String(e.what()));
                 }
-            }
-
-            // If the renamed pattern is currently being inspected, refresh the
-            // inspector's window title and the in-panel "Pattern: <name>" label
-            // so they don't drift from the new name. Uses setPatternName (not
-            // setPatternData) to preserve the user's current word-scroll
-            // position through the inspector — only the displayed name updates.
-            if (inspectorWindow != nullptr && inspectedPatternIndex == editingPatternIndex)
-            {
-                inspectorWindow->setName("Synthesis Inspector: " + newName);
-                synthInspector.setPatternName(newName);
             }
 
             editingPatternIndex = -1;
@@ -778,106 +743,97 @@ void DAWComponent::paint(juce::Graphics& g)
     // Background
     g.fillAll(juce::Colour(15, 15, 25));
 
-    int menuBarHeight = 25;
-    int toolbarHeight = 40;
-    int toolbar2Height = 35;
-    int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
-    int patternWidth = 150;
-    int trackHeaderWidth = 80;
-    int gridLeft = patternWidth + trackHeaderWidth;
     int cellWidth = (int)(80.0f * cellWidthMultiplier);
-    int scrollBarWidth = 12;
-    int gridWidth = getWidth() - gridLeft - scrollBarWidth;
+    int gridWidth = getWidth() - kGridLeft - kScrollBarWidth;
     int scrolledX = (int)horizontalScrollOffset;
 
     // Toolbar backgrounds
     g.setColour(juce::Colour(30, 10, 50));
-    g.fillRect(0, menuBarHeight, getWidth(), toolbarHeight);
+    g.fillRect(0, kMenuBarHeight, getWidth(), kToolbarHeight);
     g.setColour(juce::Colour(20, 20, 40));
-    g.fillRect(0, menuBarHeight + toolbarHeight, getWidth(), toolbar2Height);
+    g.fillRect(0, kMenuBarHeight + kToolbarHeight, getWidth(), kToolbar2Height);
 
     // Metronome visual flash
     if (metronomeEnabled && metronomeBeat)
     {
         g.setColour(juce::Colours::limegreen.withAlpha(0.6f));
-        g.fillRoundedRectangle(170 + (28 + 4) * 3, menuBarHeight + toolbarHeight + 3, 50, 28, 4.0f);
+        g.fillRoundedRectangle(170 + (28 + 4) * 3, kMenuBarHeight + kToolbarHeight + 3, 50, 28, 4.0f);
     }
 
     // Pattern browser background
     g.setColour(juce::Colour(20, 10, 35));
-    g.fillRect(0, gridTop, patternWidth, getHeight() - gridTop);
+    g.fillRect(0, kGridTop, kPatternWidth, getHeight() - kGridTop);
 
     // Section off buttons area at bottom
     g.setColour(juce::Colour(30, 15, 50));
-    g.fillRect(0, getHeight() - 70, patternWidth, 70);
+    g.fillRect(0, getHeight() - 70, kPatternWidth, 70);
     g.setColour(juce::Colour(60, 40, 90));
-    g.drawLine(0, getHeight() - 70, patternWidth, getHeight() - 70, 1.0f);
+    g.drawLine(0, getHeight() - 70, kPatternWidth, getHeight() - 70, 1.0f);
 
     // Track header background
     g.setColour(juce::Colour(35, 15, 55));
-    g.fillRect(patternWidth, gridTop, trackHeaderWidth, getHeight() - gridTop);
+    g.fillRect(kPatternWidth, kGridTop, kTrackHeaderWidth, getHeight() - kGridTop);
     g.setColour(juce::Colour(60, 40, 90));
-    g.drawLine(gridLeft, gridTop, gridLeft, getHeight(), 1.0f);
+    g.drawLine(kGridLeft, kGridTop, kGridLeft, getHeight(), 1.0f);
 
     // Measure numbers header
     g.setColour(juce::Colour(30, 30, 50));
-    g.fillRect(gridLeft, gridTop, gridWidth, 20);
+    g.fillRect(kGridLeft, kGridTop, gridWidth, 20);
     g.setColour(juce::Colours::grey);
     g.setFont(12.0f);
     int numCols = gridWidth / cellWidth + 1;
     int startCol = scrolledX / cellWidth;
     for (int col = startCol; col < startCol + numCols + 1; ++col)
     {
-        int x = gridLeft + col * cellWidth - scrolledX;
+        int x = kGridLeft + col * cellWidth - scrolledX;
         if (x > getWidth()) break;
-        g.drawText(juce::String(col + 1), x + 4, gridTop, cellWidth, 20, juce::Justification::centredLeft);
+        g.drawText(juce::String(col + 1), x + 4, kGridTop, cellWidth, 20, juce::Justification::centredLeft);
         // Draw tick marks
         g.setColour(juce::Colour(80, 80, 120));
-        g.drawLine(x, gridTop + 14, x, gridTop + 20, 1.0f);
+        g.drawLine(x, kGridTop + 14, x, kGridTop + 20, 1.0f);
         g.setColour(juce::Colours::grey);
     }
 
-    int trackAreaTop = gridTop + 20;
 
     // Draw dynamic tracks
     for (int i = 0; i < trackNames.size(); ++i)
     {
-        int y = trackAreaTop + i * trackHeight - (int)trackScrollOffset;
+        int y = kTrackAreaTop + i * trackHeight - (int)trackScrollOffset;
 
-        if (y + trackHeight < trackAreaTop || y > getHeight()) continue;
+        if (y + trackHeight < kTrackAreaTop || y > getHeight()) continue;
 
         // Track row background - only in grid area
         g.setColour(i % 2 == 0 ? juce::Colour(25, 25, 40) : juce::Colour(20, 20, 35));
-        g.fillRect(gridLeft, y, gridWidth, trackHeight);
+        g.fillRect(kGridLeft, y, gridWidth, trackHeight);
 
         // Vertical beat lines
         g.setColour(juce::Colour(60, 60, 90));
         for (int col = startCol; col <= startCol + numCols + 1; ++col)
         {
-            int x = gridLeft + col * cellWidth - scrolledX;
+            int x = kGridLeft + col * cellWidth - scrolledX;
             if (x > getWidth()) break;
             g.drawLine(x, y, x, y + trackHeight, 1.0f);
         }
 
         // Remove button in track header
         g.setColour(juce::Colour(150, 30, 30));
-        g.fillRoundedRectangle(patternWidth + 4, y + 10, 20, 20, 4.0f);
+        g.fillRoundedRectangle(kPatternWidth + 4, y + 10, 20, 20, 4.0f);
         g.setColour(juce::Colours::white);
         g.setFont(14.0f);
-        g.drawText("-", patternWidth + 4, y + 10, 20, 20, juce::Justification::centred);
+        g.drawText("-", kPatternWidth + 4, y + 10, 20, 20, juce::Justification::centred);
 
         // Track name
         g.setFont(12.0f);
-        g.drawText(trackNames[i], patternWidth + 26, y, trackHeaderWidth - 28, trackHeight, juce::Justification::centredLeft);
+        g.drawText(trackNames[i], kPatternWidth + 26, y, kTrackHeaderWidth - 28, trackHeight, juce::Justification::centredLeft);
 
         // Draw placed clips for this track
         for (auto& clip : placedClips)
         {
             if (clip.trackIndex == i)
             {
-                int clipX = gridLeft + (int)(clip.startBeat * cellWidth) - scrolledX;
+                int clipX = kGridLeft + (int)(clip.startBeat * cellWidth) - scrolledX;
                 int clipW = (int)(clip.duration * cellWidth);
-                if (clipX + clipW < gridLeft || clipX > getWidth()) continue;
+                if (clipX + clipW < kGridLeft || clipX > getWidth()) continue;
                 g.setColour(juce::Colour(100, 40, 160));
                 g.fillRoundedRectangle(clipX + 1, y + 2, clipW - 2, trackHeight - 4, 4.0f);
                 // Draw note preview as horizontal bars (mini piano roll)
@@ -892,15 +848,15 @@ void DAWComponent::paint(juce::Graphics& g)
                     // Find pitch range for better scaling
                     for (auto& note : notes)
                     {
-                        minPitch = std::min(minPitch, note.pitch);
-                        maxPitch = std::max(maxPitch, note.pitch);
+                        minPitch = juce::jmin(minPitch, note.pitch);
+                        maxPitch = juce::jmax(maxPitch, note.pitch);
                     }
-                    int pitchRange = std::max(maxPitch - minPitch, 12); // min range of 12 semitones
+                    int pitchRange = juce::jmax(maxPitch - minPitch, 12); // min range of 12 semitones
 
                     int innerTop = y + 14;           // leave room for label
                     int innerBottom = y + trackHeight - 3;
                     int innerHeight = innerBottom - innerTop;
-                    int barH = std::max(2, innerHeight / pitchRange);
+                    int barH = juce::jmax(2, innerHeight / pitchRange);
 
                     for (auto& note : notes)
                     {
@@ -929,54 +885,54 @@ void DAWComponent::paint(juce::Graphics& g)
 
         // Grid lines
         g.setColour(juce::Colour(60, 60, 90));
-        g.drawLine(gridLeft, y + trackHeight, gridLeft + gridWidth, y + trackHeight, 1.0f);
+        g.drawLine(kGridLeft, y + trackHeight, kGridLeft + gridWidth, y + trackHeight, 1.0f);
     }
 
 
     // Redraw left columns on top of everything
     g.setColour(juce::Colour(20, 10, 35));
-    g.fillRect(0, gridTop, patternWidth, getHeight() - gridTop);
+    g.fillRect(0, kGridTop, kPatternWidth, getHeight() - kGridTop);
     g.setColour(juce::Colour(35, 15, 55));
-    g.fillRect(patternWidth, gridTop, trackHeaderWidth, getHeight() - gridTop);
+    g.fillRect(kPatternWidth, kGridTop, kTrackHeaderWidth, getHeight() - kGridTop);
     g.setColour(juce::Colour(60, 40, 90));
-    g.drawLine(patternWidth, gridTop, patternWidth, getHeight(), 1.0f);
-    g.drawLine(gridLeft, gridTop, gridLeft, getHeight(), 1.0f);
+    g.drawLine(kPatternWidth, kGridTop, kPatternWidth, getHeight(), 1.0f);
+    g.drawLine(kGridLeft, kGridTop, kGridLeft, getHeight(), 1.0f);
 
     // Redraw pattern browser content on top
     g.setColour(juce::Colours::grey);
     g.setFont(12.0f);
-    g.drawText("PATTERNS", 4, gridTop + 4, patternWidth - 8, 20, juce::Justification::centred);
-    drawPatternBrowser(g, gridTop, patternWidth);
+    g.drawText("PATTERNS", 4, kGridTop + 4, kPatternWidth - 8, 20, juce::Justification::centred);
+    drawPatternBrowser(g, kGridTop, kPatternWidth);
 
     // Redraw track labels on top
     for (int i = 0; i < trackNames.size(); ++i)
     {
-        int y = gridTop + 20 + i * trackHeight - (int)trackScrollOffset;
-        if (y + trackHeight < gridTop + 20 || y > getHeight()) continue;
+        int y = kGridTop + 20 + i * trackHeight - (int)trackScrollOffset;
+        if (y + trackHeight < kGridTop + 20 || y > getHeight()) continue;
         g.setColour(juce::Colour(150, 30, 30));
-        g.fillRoundedRectangle(patternWidth + 4, y + 10, 20, 20, 4.0f);
+        g.fillRoundedRectangle(kPatternWidth + 4, y + 10, 20, 20, 4.0f);
         g.setColour(juce::Colours::white);
         g.setFont(14.0f);
-        g.drawText("-", patternWidth + 4, y + 10, 20, 20, juce::Justification::centred);
+        g.drawText("-", kPatternWidth + 4, y + 10, 20, 20, juce::Justification::centred);
         g.setFont(12.0f);
-        g.drawText(trackNames[i], patternWidth + 26, y, trackHeaderWidth - 28, trackHeight, juce::Justification::centredLeft);
+        g.drawText(trackNames[i], kPatternWidth + 26, y, kTrackHeaderWidth - 28, trackHeight, juce::Justification::centredLeft);
     }
 
     // Section divider for buttons
     g.setColour(juce::Colour(30, 15, 50));
-    g.fillRect(0, getHeight() - 70, patternWidth, 70);
+    g.fillRect(0, getHeight() - 70, kPatternWidth, 70);
     g.setColour(juce::Colour(60, 40, 90));
-    g.drawLine(0, getHeight() - 70, patternWidth, getHeight() - 70, 1.0f);
+    g.drawLine(0, getHeight() - 70, kPatternWidth, getHeight() - 70, 1.0f);
 
     // Playhead
-    int playheadX = gridLeft + (int)(playheadPosition * cellWidth) - scrolledX;
-    if (playheadX >= gridLeft && playheadX <= getWidth())
+    int playheadX = kGridLeft + (int)(playheadPosition * cellWidth) - scrolledX;
+    if (playheadX >= kGridLeft && playheadX <= getWidth())
     {
         g.setColour(juce::Colours::red);
-        g.drawLine(playheadX, gridTop, playheadX, getHeight(), 2.0f);
+        g.drawLine(playheadX, kGridTop, playheadX, getHeight(), 2.0f);
         // Playhead triangle indicator
         juce::Path triangle;
-        triangle.addTriangle(playheadX - 6, gridTop, playheadX + 6, gridTop, playheadX, gridTop + 12);
+        triangle.addTriangle(playheadX - 6, kGridTop, playheadX + 6, kGridTop, playheadX, kGridTop + 12);
         g.fillPath(triangle);
     }
 
@@ -984,10 +940,10 @@ void DAWComponent::paint(juce::Graphics& g)
     if (isDraggingPattern && draggingPatternIndex >= 0)
     {
         g.setColour(juce::Colour(100, 40, 160).withAlpha(0.7f));
-        g.fillRoundedRectangle(dragX, dragY - patternHeight / 2, 150, patternHeight - 4, 4.0f);
+        g.fillRoundedRectangle(dragX, dragY - kPatternHeight / 2, 150, kPatternHeight - 4, 4.0f);
         g.setColour(juce::Colours::white.withAlpha(0.9f));
         g.setFont(12.0f);
-        g.drawText(patternNames[draggingPatternIndex], dragX + 4, dragY - patternHeight / 2, 140, patternHeight - 4, juce::Justification::centredLeft);
+        g.drawText(patternNames[draggingPatternIndex], dragX + 4, dragY - kPatternHeight / 2, 140, kPatternHeight - 4, juce::Justification::centredLeft);
     }
     else if (isDraggingClip && draggingClipIndex >= 0 && draggingClipIndex < placedClips.size())
     {
@@ -1003,15 +959,9 @@ void DAWComponent::paint(juce::Graphics& g)
 
 void DAWComponent::resized()
 {
-    int menuBarHeight = 25;
-    int toolbarHeight = 40;
-    int toolbar2Height = 35;
-    int y1 = menuBarHeight;
-    int y2 = y1 + toolbarHeight;
-    int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
-    int scrollBarWidth = 12;
-
-    menuBar.setBounds(0, 0, getWidth(), menuBarHeight);
+    int y1 = kMenuBarHeight;
+    int y2 = y1 + kToolbarHeight;
+    menuBar.setBounds(0, 0, getWidth(), kMenuBarHeight);
 
     // Toolbar 1
     logoLabel.setBounds(4, y1 + 5, 100, 30);
@@ -1037,8 +987,8 @@ void DAWComponent::resized()
 
     // Track scrollbar on the right
     int pianoRollHeight = pianoRollVisible ? 250 : 0;
-    int trackAreaHeight = getHeight() - gridTop - pianoRollHeight - 30;
-    trackScrollBar.setBounds(getWidth() - scrollBarWidth, gridTop, scrollBarWidth, trackAreaHeight);
+    int trackAreaHeight = getHeight() - kGridTop - pianoRollHeight - 30;
+    trackScrollBar.setBounds(getWidth() - kScrollBarWidth, kGridTop, kScrollBarWidth, trackAreaHeight);
 
     int totalTrackHeight = trackNames.size() * trackHeight;
     trackScrollBar.setRangeLimits(0.0, totalTrackHeight);
@@ -1052,21 +1002,20 @@ void DAWComponent::resized()
     addPatternButton.setBounds(4, getHeight() - 60, 140, 24);
 
     // Pattern scrollbar
-    int patternWidth = 150;
-    int patternAreaHeight = getHeight() - gridTop - 60;
-    patternScrollBar.setBounds(patternWidth - 10, gridTop + 20, 10, patternAreaHeight);
-    int totalPatternHeight = patternNames.size() * patternHeight + patternHeight;
+    int patternAreaHeight = getHeight() - kGridTop - 60;
+    patternScrollBar.setBounds(kPatternWidth - 10, kGridTop + 20, 10, patternAreaHeight);
+    int totalPatternHeight = patternNames.size() * kPatternHeight + kPatternHeight;
     patternScrollBar.setRangeLimits(0.0, totalPatternHeight);
     patternScrollBar.setCurrentRange(patternScrollOffset, patternAreaHeight);
 
     // Horizontal scrollbar for grid
-    int gridLeft = patternWidth + 80;
+
     int horizontalScrollBarY = getHeight() - 30;
-    horizontalScrollBar.setBounds(gridLeft, horizontalScrollBarY, getWidth() - gridLeft - scrollBarWidth, 12);
+    horizontalScrollBar.setBounds(kGridLeft, horizontalScrollBarY, getWidth() - kGridLeft - kScrollBarWidth, 12);
     int cellWidth = (int)(80.0f * cellWidthMultiplier);
     int totalGridWidth = 128 * cellWidth;
     horizontalScrollBar.setRangeLimits(0.0, totalGridWidth);
-    horizontalScrollBar.setCurrentRange(horizontalScrollOffset, getWidth() - gridLeft);
+    horizontalScrollBar.setCurrentRange(horizontalScrollOffset, getWidth() - kGridLeft);
 
     // ── Educational: inspector toggle + highlight overlay ───────────────────
     // Inspector toggle sits in the pattern browser footer, above "+ Add Pattern"
@@ -1173,12 +1122,12 @@ void DAWComponent::menuItemSelected(int menuItemID, int)
         break;
 
     case 7: // Zoom In
-        cellWidthMultiplier = std::min(cellWidthMultiplier + 0.25f, 3.0f);
+        cellWidthMultiplier = juce::jmin(cellWidthMultiplier + 0.25f, 3.0f);
         repaint();
         break;
 
     case 8: // Zoom Out
-        cellWidthMultiplier = std::max(cellWidthMultiplier - 0.25f, 0.5f);
+        cellWidthMultiplier = juce::jmax(cellWidthMultiplier - 0.25f, 0.5f);
         repaint();
         break;
 
@@ -1344,23 +1293,14 @@ juce::String DAWComponent::getTooltip()
     if (!getLocalBounds().contains(local)) return {};
 
     // ── Layout constants — keep these in sync with paint() / resized() ────
-    constexpr int menuBarHeight = 25;
-    constexpr int toolbarHeight = 40;
-    constexpr int toolbar2Height = 35;
-    constexpr int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
-    constexpr int patternAreaTop = gridTop + 28;
-    constexpr int trackAreaTop = gridTop + 20;
-    constexpr int patternWidth = 150;
-    constexpr int trackHeaderWidth = 80;
-    constexpr int gridLeft = patternWidth + trackHeaderWidth;
 
     // Hovering a pattern row in the browser?
-    if (local.x >= 4 && local.x < patternWidth - 4 && local.y >= patternAreaTop)
+    if (local.x >= 4 && local.x < kPatternWidth - 4 && local.y >= kPatternAreaTop)
     {
         for (int i = 0; i < patternNames.size(); ++i)
         {
-            const int rowY = patternAreaTop + i * patternHeight - (int)patternScrollOffset;
-            juce::Rectangle<int> rowRect(4, rowY, patternWidth - 8, patternHeight - 4);
+            const int rowY = kPatternAreaTop + i * kPatternHeight - (int)patternScrollOffset;
+            juce::Rectangle<int> rowRect(4, rowY, kPatternWidth - 8, kPatternHeight - 4);
             if (rowRect.contains(local))
             {
                 return juce::String(juce::CharPointer_UTF8(
@@ -1372,13 +1312,13 @@ juce::String DAWComponent::getTooltip()
     }
 
     // Hovering a placed clip in the timeline?
-    if (local.x >= gridLeft && local.y >= trackAreaTop)
+    if (local.x >= kGridLeft && local.y >= kTrackAreaTop)
     {
         const int cellWidth = (int)(80.0f * cellWidthMultiplier);
         for (const auto& clip : placedClips)
         {
-            const int trackY = trackAreaTop + clip.trackIndex * trackHeight - (int)trackScrollOffset;
-            const int clipX = gridLeft + (int)(clip.startBeat * cellWidth) - (int)horizontalScrollOffset;
+            const int trackY = kTrackAreaTop + clip.trackIndex * trackHeight - (int)trackScrollOffset;
+            const int clipX = kGridLeft + (int)(clip.startBeat * cellWidth) - (int)horizontalScrollOffset;
             const int clipW = (int)(clip.duration * cellWidth);
             juce::Rectangle<int> clipRect(clipX, trackY, clipW, trackHeight);
             if (clipRect.contains(local))
@@ -1396,21 +1336,14 @@ juce::String DAWComponent::getTooltip()
 
 void DAWComponent::mouseDown(const juce::MouseEvent& e)
 {
-    int menuBarHeight = 25;
-    int toolbarHeight = 40;
-    int toolbar2Height = 35;
-    int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
-    int trackAreaTop = gridTop + 20;
-    int patternAreaTop = gridTop + 28;
-    int gridLeft = 200;
 
     if (e.mods.isRightButtonDown())
     {
         // Right click on pattern
         for (int i = 0; i < patternNames.size(); ++i)
         {
-            int y = patternAreaTop + i * patternHeight - (int)patternScrollOffset;
-            juce::Rectangle<int> patternRect(4, y, 150 - 8, patternHeight - 4);
+            int y = kPatternAreaTop + i * kPatternHeight - (int)patternScrollOffset;
+            juce::Rectangle<int> patternRect(4, y, 150 - 8, kPatternHeight - 4);
             if (patternRect.contains(e.x, e.y))
             {
                 juce::PopupMenu menu;
@@ -1425,13 +1358,7 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
                         if (result == 1)
                         {
                             // Rename
-                            int menuBarHeight = 25;
-                            int toolbarHeight = 40;
-                            int toolbar2Height = 35;
-                            int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
-                            int patternAreaTop = gridTop + 28;
-                            int gridLeft = 200;
-                            int y = patternAreaTop + i * patternHeight;
+                            int y = kPatternAreaTop + i * kPatternHeight;
 
                             // Suppress one focus-lost: showing/refocusing the
                             // editor causes the previously-focused window to
@@ -1442,7 +1369,7 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
 
                             editingPatternIndex = i;
                             patternRenameEditor.setText(patternNames[i]);
-                            patternRenameEditor.setBounds(4, y, gridLeft - 8, patternHeight - 4);
+                            patternRenameEditor.setBounds(4, y, kGridLeft - 8, kPatternHeight - 4);
                             patternRenameEditor.setVisible(true);
                             patternRenameEditor.grabKeyboardFocus();
                             patternRenameEditor.selectAll();
@@ -1533,7 +1460,7 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
                                         sn.pitch = std::stoi(PQgetvalue(notesRes, row, 0));
                                         sn.beat = std::stoi(PQgetvalue(notesRes, row, 1));
                                         sn.lyric = juce::String(PQgetvalue(notesRes, row, 2));
-                                        sn.duration = std::max(1, std::stoi(PQgetvalue(notesRes, row, 3)));
+                                        sn.duration = juce::jmax(1, std::stoi(PQgetvalue(notesRes, row, 3)));
                                         action.savedNotes.add(sn);
                                     }
                                 }
@@ -1603,8 +1530,8 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
             for (int ci = 0; ci < placedClips.size(); ++ci)
             {
                 const auto& clip = placedClips.getReference(ci);
-                const int trackY = trackAreaTop + clip.trackIndex * trackHeight - (int)trackScrollOffset;
-                const int clipX = gridLeft + (int)(clip.startBeat * cellWidth) - (int)horizontalScrollOffset;
+                const int trackY = kTrackAreaTop + clip.trackIndex * trackHeight - (int)trackScrollOffset;
+                const int clipX = kGridLeft + (int)(clip.startBeat * cellWidth) - (int)horizontalScrollOffset;
                 const int clipW = (int)(clip.duration * cellWidth);
                 juce::Rectangle<int> clipRect(clipX, trackY, clipW, trackHeight);
                 if (!clipRect.contains(e.x, e.y)) continue;
@@ -1701,9 +1628,8 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
     // Check track remove button
     for (int i = 0; i < trackNames.size(); ++i)
     {
-        int y = trackAreaTop + i * trackHeight - (int)trackScrollOffset;
-        int patternWidth = 150;
-        juce::Rectangle<int> removeBtn(patternWidth + 4, y + 10, 20, 20);
+        int y = kTrackAreaTop + i * trackHeight - (int)trackScrollOffset;
+        juce::Rectangle<int> removeBtn(kPatternWidth + 4, y + 10, 20, 20);
         if (removeBtn.contains(e.x, e.y))
         {
             removeTrack(i);
@@ -1713,16 +1639,11 @@ void DAWComponent::mouseDown(const juce::MouseEvent& e)
 }
 void DAWComponent::mouseDoubleClick(const juce::MouseEvent& e)
 {
-    int menuBarHeight = 25;
-    int toolbarHeight = 40;
-    int toolbar2Height = 35;
-    int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
-    int patternAreaTop = gridTop + 28;
 
     for (int i = 0; i < patternNames.size(); ++i)
     {
-        int y = patternAreaTop + i * patternHeight - (int)patternScrollOffset;
-        juce::Rectangle<int> patternRect(4, y, 150 - 8, patternHeight - 4);
+        int y = kPatternAreaTop + i * kPatternHeight - (int)patternScrollOffset;
+        juce::Rectangle<int> patternRect(4, y, 150 - 8, kPatternHeight - 4);
         if (patternRect.contains(e.x, e.y))
         {
             openPatternEditor(i);
@@ -1768,7 +1689,7 @@ void DAWComponent::addPattern()
     redoStack.clear();
     if (undoStack.size() > 10) undoStack.remove(0);
 
-    int totalPatternHeight = patternNames.size() * patternHeight;
+    int totalPatternHeight = patternNames.size() * kPatternHeight;
     patternScrollBar.setRangeLimits(0.0, totalPatternHeight);
     loadPatternNotes();
     loadFullPatternNotes();
@@ -1779,24 +1700,18 @@ void DAWComponent::addPattern()
     // the geometry math used there so the inline editor lands exactly on
     // the new pattern's row in the browser.
     const int newIndex = patternNames.size() - 1;
-    constexpr int menuBarHeight = 25;
-    constexpr int toolbarHeight = 40;
-    constexpr int toolbar2Height = 35;
-    const int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
-    const int patternAreaTop = gridTop + 28;
-    constexpr int gridLeft = 200;
 
     // Make sure the new row is visible — scroll it into view if it's off-screen.
-    const int rowYContent = newIndex * patternHeight;
-    const int patternAreaHeight = getHeight() - gridTop - 60;
-    if (rowYContent + patternHeight > patternScrollOffset + patternAreaHeight)
+    const int rowYContent = newIndex * kPatternHeight;
+    const int patternAreaHeight = getHeight() - kGridTop - 60;
+    if (rowYContent + kPatternHeight > patternScrollOffset + patternAreaHeight)
     {
-        patternScrollOffset = std::max(0.0,
-            (double)(rowYContent + patternHeight - patternAreaHeight));
+        patternScrollOffset = juce::jmax(0.0,
+            (double)(rowYContent + kPatternHeight - patternAreaHeight));
         patternScrollBar.setCurrentRangeStart(patternScrollOffset);
     }
 
-    const int y = patternAreaTop + rowYContent - (int)patternScrollOffset;
+    const int y = kPatternAreaTop + rowYContent - (int)patternScrollOffset;
 
     // Suppress one focus-lost — opening this editor steals focus from
     // wherever it was, generating a stray focus-loss notification.
@@ -1806,7 +1721,7 @@ void DAWComponent::addPattern()
 
     editingPatternIndex = newIndex;
     patternRenameEditor.setText(newName);
-    patternRenameEditor.setBounds(4, y, gridLeft - 8, patternHeight - 4);
+    patternRenameEditor.setBounds(4, y, kGridLeft - 8, kPatternHeight - 4);
     patternRenameEditor.setVisible(true);
     patternRenameEditor.grabKeyboardFocus();
     patternRenameEditor.selectAll();
@@ -1839,18 +1754,17 @@ void DAWComponent::openPatternEditor(int index)
         };
 }
 
-void DAWComponent::drawPatternBrowser(juce::Graphics& g, int gridTop, int patternWidth)
+void DAWComponent::drawPatternBrowser(juce::Graphics& g, int /*gridTop*/, int /*patWidth*/)
 {
-    int patternAreaTop = gridTop + 28;
 
     for (int i = 0; i < patternNames.size(); ++i)
     {
-        int y = patternAreaTop + i * patternHeight - (int)patternScrollOffset;
+        int y = kPatternAreaTop + i * kPatternHeight - (int)patternScrollOffset;
 
-        if (y + patternHeight < patternAreaTop || y > getHeight() - 70) continue;
+        if (y + kPatternHeight < kPatternAreaTop || y > getHeight() - 70) continue;
 
         g.setColour(juce::Colour(70, 20, 110));
-        g.fillRoundedRectangle(4, y, patternWidth - 14, patternHeight - 4, 4.0f);
+        g.fillRoundedRectangle(4, y, kPatternWidth - 14, kPatternHeight - 4, 4.0f);
 
         // Draw note preview as horizontal bars (mini piano roll)
         if (i < patternNotePreviews.size())
@@ -1862,16 +1776,16 @@ void DAWComponent::drawPatternBrowser(juce::Graphics& g, int gridTop, int patter
                 int minPitch = 127, maxPitch = 0;
                 for (auto& note : notes)
                 {
-                    minPitch = std::min(minPitch, note.pitch);
-                    maxPitch = std::max(maxPitch, note.pitch);
+                    minPitch = juce::jmin(minPitch, note.pitch);
+                    maxPitch = juce::jmax(maxPitch, note.pitch);
                 }
-                int pitchRange = std::max(maxPitch - minPitch, 12);
+                int pitchRange = juce::jmax(maxPitch - minPitch, 12);
 
-                int previewW = patternWidth - 18;
+                int previewW = kPatternWidth - 18;
                 int innerTop = y + 4;
-                int innerH = patternHeight - 8;
-                int barH = std::max(2, innerH / pitchRange);
-                int barW = std::max(3, previewW / maxBeat);
+                int innerH = kPatternHeight - 8;
+                int barH = juce::jmax(2, innerH / pitchRange);
+                int barW = juce::jmax(3, previewW / maxBeat);
 
                 for (auto& note : notes)
                 {
@@ -1887,36 +1801,33 @@ void DAWComponent::drawPatternBrowser(juce::Graphics& g, int gridTop, int patter
 
         g.setColour(juce::Colours::white);
         g.setFont(12.0f);
-        g.drawText(patternNames[i], 10, y, patternWidth - 24, patternHeight - 4, juce::Justification::centredLeft);
+        g.drawText(patternNames[i], 10, y, kPatternWidth - 24, kPatternHeight - 4, juce::Justification::centredLeft);
     }
 }
 
 void DAWComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
 {
-    int patternWidth = 150;
-    int trackHeaderWidth = 80;
-    int gridLeft = patternWidth + trackHeaderWidth;
 
-    if (e.x < patternWidth)
+    if (e.x < kPatternWidth)
     {
         double newOffset = patternScrollOffset - (double)wheel.deltaY * 60.0;
-        newOffset = std::max(0.0, std::min(newOffset, patternScrollBar.getRangeLimit().getEnd()));
+        newOffset = juce::jmax(0.0, juce::jmin(newOffset, patternScrollBar.getRangeLimit().getEnd()));
         patternScrollBar.setCurrentRangeStart(newOffset);
     }
-    else if (e.x < gridLeft)
+    else if (e.x < kGridLeft)
     {
         double newOffset = trackScrollOffset - (double)wheel.deltaY * 60.0;
-        newOffset = std::max(0.0, std::min(newOffset, trackScrollBar.getRangeLimit().getEnd()));
+        newOffset = juce::jmax(0.0, juce::jmin(newOffset, trackScrollBar.getRangeLimit().getEnd()));
         trackScrollBar.setCurrentRangeStart(newOffset);
     }
     else
     {
         double newOffset = trackScrollOffset - (double)wheel.deltaY * 60.0;
-        newOffset = std::max(0.0, std::min(newOffset, trackScrollBar.getRangeLimit().getEnd()));
+        newOffset = juce::jmax(0.0, juce::jmin(newOffset, trackScrollBar.getRangeLimit().getEnd()));
         trackScrollBar.setCurrentRangeStart(newOffset);
 
         double newHOffset = horizontalScrollOffset - (double)wheel.deltaX * 60.0;
-        newHOffset = std::max(0.0, std::min(newHOffset, horizontalScrollBar.getRangeLimit().getEnd()));
+        newHOffset = juce::jmax(0.0, juce::jmin(newHOffset, horizontalScrollBar.getRangeLimit().getEnd()));
         horizontalScrollBar.setCurrentRangeStart(newHOffset);
     }
 }
@@ -1959,23 +1870,14 @@ void DAWComponent::mouseDrag(const juce::MouseEvent& e)
 {
     if (!isDraggingPattern && !isDraggingClip)
     {
-        int menuBarHeight = 25;
-        int toolbarHeight = 40;
-        int toolbar2Height = 35;
-        int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
-        int patternAreaTop = gridTop + 28;
-        int trackAreaTop = gridTop + 20;
-        int patternWidth = 150;
-        int trackHeaderWidth = 80;
-        int gridLeft = patternWidth + trackHeaderWidth;
         int cellWidth = (int)(80.0f * cellWidthMultiplier);
 
         // Check if drag started on an existing clip
         for (int i = 0; i < placedClips.size(); ++i)
         {
             auto& clip = placedClips.getReference(i);
-            int trackY = trackAreaTop + clip.trackIndex * trackHeight - (int)trackScrollOffset;
-            int clipX = gridLeft + (int)(clip.startBeat * cellWidth) - (int)horizontalScrollOffset;
+            int trackY = kTrackAreaTop + clip.trackIndex * trackHeight - (int)trackScrollOffset;
+            int clipX = kGridLeft + (int)(clip.startBeat * cellWidth) - (int)horizontalScrollOffset;
             int clipW = (int)(clip.duration * cellWidth);
             juce::Rectangle<int> clipRect(clipX, trackY, clipW, trackHeight);
 
@@ -1992,8 +1894,8 @@ void DAWComponent::mouseDrag(const juce::MouseEvent& e)
         {
             for (int i = 0; i < patternNames.size(); ++i)
             {
-                int y = patternAreaTop + i * patternHeight - (int)patternScrollOffset;
-                juce::Rectangle<int> patternRect(4, y, 150 - 8, patternHeight - 4);
+                int y = kPatternAreaTop + i * kPatternHeight - (int)patternScrollOffset;
+                juce::Rectangle<int> patternRect(4, y, 150 - 8, kPatternHeight - 4);
                 if (patternRect.contains(e.getMouseDownX(), e.getMouseDownY()))
                 {
                     isDraggingPattern = true;
@@ -2014,19 +1916,11 @@ void DAWComponent::mouseDrag(const juce::MouseEvent& e)
 
 void DAWComponent::mouseUp(const juce::MouseEvent& e)
 {
-    int menuBarHeight = 25;
-    int toolbarHeight = 40;
-    int toolbar2Height = 35;
-    int gridTop = menuBarHeight + toolbarHeight + toolbar2Height;
-    int trackAreaTop = gridTop + 20;
-    int patternWidth = 150;
-    int trackHeaderWidth = 80;
-    int gridLeft = patternWidth + trackHeaderWidth;
     int cellWidth = (int)(80.0f * cellWidthMultiplier);
 
     if (isDraggingClip && draggingClipIndex >= 0)
     {
-        if (e.x < patternWidth)
+        if (e.x < kPatternWidth)
         {
             // Block deleting a clip whose pattern is currently being inspected
             if (isInspecting()
@@ -2054,13 +1948,13 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
         {
             for (int i = 0; i < trackNames.size(); ++i)
             {
-                int y = trackAreaTop + i * trackHeight - (int)trackScrollOffset;
-                juce::Rectangle<int> trackRect(gridLeft, y, getWidth() - gridLeft, trackHeight);
+                int y = kTrackAreaTop + i * trackHeight - (int)trackScrollOffset;
+                juce::Rectangle<int> trackRect(kGridLeft, y, getWidth() - kGridLeft, trackHeight);
 
                 if (trackRect.contains(e.x, e.y))
                 {
-                    double beat = (double)(e.x - gridLeft + (int)horizontalScrollOffset) / cellWidth;
-                    beat = std::max(0.0, beat);
+                    double beat = (double)(e.x - kGridLeft + (int)horizontalScrollOffset) / cellWidth;
+                    beat = juce::jmax(0.0, beat);
 
                     if (!e.mods.isShiftDown())
                     {
@@ -2114,13 +2008,13 @@ void DAWComponent::mouseUp(const juce::MouseEvent& e)
 
         for (int i = 0; i < trackNames.size(); ++i)
         {
-            int y = trackAreaTop + i * trackHeight - (int)trackScrollOffset;
-            juce::Rectangle<int> trackRect(gridLeft, y, getWidth() - gridLeft, trackHeight);
+            int y = kTrackAreaTop + i * trackHeight - (int)trackScrollOffset;
+            juce::Rectangle<int> trackRect(kGridLeft, y, getWidth() - kGridLeft, trackHeight);
 
             if (trackRect.contains(e.x, e.y))
             {
-                double beat = (double)(e.x - gridLeft + (int)horizontalScrollOffset) / cellWidth;
-                beat = std::max(0.0, beat);
+                double beat = (double)(e.x - kGridLeft + (int)horizontalScrollOffset) / cellWidth;
+                beat = juce::jmax(0.0, beat);
 
                 if (!e.mods.isShiftDown())
                 {
@@ -2209,7 +2103,7 @@ void DAWComponent::loadPatterns()
         DBG("Pattern load error: " + juce::String(e.what()));
     }
 
-    int totalPatternHeight = patternNames.size() * patternHeight;
+    int totalPatternHeight = patternNames.size() * kPatternHeight;
     patternScrollBar.setRangeLimits(0.0, totalPatternHeight);
     repaint();
     resized();
@@ -2631,13 +2525,13 @@ double DAWComponent::getPatternDuration(int patternIndex) const
         for (const auto& note : patternNotePreviews.getReference(patternIndex))
         {
             // A note occupies [beat, beat + duration). Extend pattern to cover it.
-            double noteEnd = (double)(note.beat + std::max(1, note.duration));
+            double noteEnd = (double)(note.beat + juce::jmax(1, note.duration));
             if (noteEnd > maxBeat) maxBeat = noteEnd;
         }
     }
 
     // Round up to nearest 4-beat measure, minimum 4 beats
-    double duration = std::max(4.0, std::ceil(maxBeat / 4.0) * 4.0);
+    double duration = juce::jmax(4.0, std::ceil(maxBeat / 4.0) * 4.0);
     return duration;
 }
 
@@ -2690,7 +2584,7 @@ void DAWComponent::loadFullPatternNotes()
                     n.pitch = std::stoi(PQgetvalue(res, row, 0));
                     n.beat = std::stoi(PQgetvalue(res, row, 1));
                     n.lyric = juce::String(PQgetvalue(res, row, 2));
-                    n.duration = std::max(1, std::stoi(PQgetvalue(res, row, 3)));
+                    n.duration = juce::jmax(1, std::stoi(PQgetvalue(res, row, 3)));
                     notes.add(n);
                 }
             }
@@ -3149,14 +3043,9 @@ void DAWComponent::ResourceLoader::run()
     // Stage 2: voice bank (slow — ~3400 WAV files, several seconds).
     if (!threadShouldExit())
     {
-        // Use the bank folder resolved at construction time (DAWComponent's
-        // ctor reads voice_bank_index from the Projects row before starting
-        // this thread). For fresh projects this is Aaron; for projects that
-        // were last saved on UTAU it's UTAU. Defensive fallback to Aaron if
-        // the resolved folder somehow vanished between resolution and now.
-        auto bankDir = bankFolderToLoad.isDirectory()
-            ? bankFolderToLoad
-            : resourcesDir.getChildFile("VoiceBank").getChildFile("Aaron");
+        // The Aaron bank is the initial default. UTAU (and any others) can be
+        // hot-swapped in later via DAWComponent::openVoiceBankSelector().
+        auto bankDir = resourcesDir.getChildFile("VoiceBank").getChildFile("Aaron");
         owner.vocalSynth.loadVoiceBank(bankDir);
 
         juce::MessageManager::callAsync([ownerPtr = &owner]()
@@ -3467,7 +3356,7 @@ juce::String DAWComponent::HelpOverlay::getHelpBody()
         "Voice bank & phonemes\n"
         "---------------------\n"
         "  Uses the CMU Pronouncing Dictionary + ARPAsing-format WAV samples\n"
-        "  organised by phoneme and pitch (A3, C4, F4 folders). The engine\n"
+        "  organised by phoneme and pitch (A3, F#4, C5 folders). The engine\n"
         "  prefers diphones (PREV-CUR) over solo phonemes for smoother\n"
         "  transitions, with equal-power crossfades between slots.\n\n"
         "Tips\n"
@@ -3505,7 +3394,7 @@ juce::String DAWComponent::HelpOverlay::getAboutBody()
         "  Lyrics get split into words, words get looked up in the CMU\n"
         "  Pronouncing Dictionary to retrieve their ARPAbet phoneme sequence,\n"
         "  and each phoneme is rendered from a pre-recorded WAV sample at\n"
-        "  the closest available pitch (A3 / C4 / F4). Diphones (PREV-CUR)\n"
+        "  the closest available pitch (A3 / F#4 / C5). Diphones (PREV-CUR)\n"
         "  are preferred over solo phonemes for smoother transitions, and\n"
         "  the engine adds vibrato, slight timing jitter, and equal-power\n"
         "  crossfades to keep things sounding human.\n\n"
@@ -3557,7 +3446,7 @@ DAWComponent::discoverAvailableBanks() const
 {
     juce::Array<VoiceBankSelectorOverlay::BankInfo> banks;
 
-    // Does this folder contain at least one pitch subfolder (A3, C4, F4, ...)?
+    // Does this folder contain at least one pitch subfolder (A3, F#4, C5, ...)?
     auto hasPitchFolders = [](const juce::File& dir) -> bool
         {
             if (!dir.isDirectory()) return false;
@@ -4195,22 +4084,6 @@ void DAWComponent::exportTimelineAsWav()
 
 void DAWComponent::startExport(const juce::File& destFile)
 {
-    // ── Capture the live device's sample rate BEFORE detaching ──────────────
-    // The synth engine reads voice-bank WAVs by sample-index increment (no
-    // resampling), so the effective playback pitch of every phoneme is rate-
-    // dependent. Rendering at a different rate than the live device would
-    // pitch-shift the export by ~log2(rateRatio) octaves relative to what
-    // the user just heard. Capturing the device rate keeps export and live
-    // bit-equivalent in feel + pitch. Falls back to 44100 if the device is
-    // somehow unavailable.
-    double exportSampleRate = 44100.0;
-    if (auto* dev = audioDeviceManager.getCurrentAudioDevice())
-    {
-        const double devRate = dev->getCurrentSampleRate();
-        if (devRate > 0.0)
-            exportSampleRate = devRate;
-    }
-
     // ── Halt live transport so nothing fights the offline renderer ──────────
     if (isPlaying)
     {
@@ -4243,7 +4116,7 @@ void DAWComponent::startExport(const juce::File& destFile)
     // ── Compute timeline length (highest clip end across all tracks) ────────
     double maxBeat = 0.0;
     for (const auto& c : placedClips)
-        maxBeat = std::max(maxBeat, c.startBeat + c.duration);
+        maxBeat = juce::jmax(maxBeat, c.startBeat + c.duration);
 
     // ── Snapshot what the renderer needs ────────────────────────────────────
     // The render runs on a worker thread; copying these arrays now means the
@@ -4263,8 +4136,7 @@ void DAWComponent::startExport(const juce::File& destFile)
         std::move(clipsCopy),
         std::move(fullNotesCopy),
         bpmCopy,
-        maxBeat,
-        exportSampleRate));
+        maxBeat));
     exportThread->startThread();
 }
 
@@ -4329,12 +4201,7 @@ void DAWComponent::ExportThread::run()
     }
 
     // ── Render parameters ───────────────────────────────────────────────────
-    // sampleRate was captured from the live device in startExport so the
-    // export plays back the voice bank at the same effective pitch the user
-    // heard live (the engine reads sample buffers by index increment with no
-    // resampling, so any rate change shifts pitch). Defensive fallback to
-    // 44100 if the captured value was invalid.
-    const double sampleRate = (this->sampleRate > 0.0) ? this->sampleRate : 44100.0;
+    const double sampleRate = 44100.0;
     const int    blockSize = 1024;
     const int    bitDepth = 16;
     const int    numChannels = 2;
@@ -4343,7 +4210,7 @@ void DAWComponent::ExportThread::run()
     const double safeBpm = (bpm > 0) ? (double)bpm : 120.0;
     const double secondsPerBeat = 60.0 / safeBpm;
     const double totalSeconds = maxBeat * secondsPerBeat + tailSeconds;
-    const int    totalSamples = std::max(1, (int)std::ceil(totalSeconds * sampleRate));
+    const int    totalSamples = juce::jmax(1, (int)std::ceil(totalSeconds * sampleRate));
 
     // ── Reset engine for offline rendering ──────────────────────────────────
     // The audio device is detached (startExport did that), so we have
@@ -4365,7 +4232,7 @@ void DAWComponent::ExportThread::run()
     {
         if (threadShouldExit()) break;
 
-        const int chunk = std::min(blockSize, totalSamples - produced);
+        const int chunk = juce::jmin(blockSize, totalSamples - produced);
 
         // Beat at the START of this chunk. Mirrors the live timer's
         // (int)playheadPosition > lastTriggeredBeat trigger logic.

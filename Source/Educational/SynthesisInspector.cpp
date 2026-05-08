@@ -1,3 +1,4 @@
+#include <JuceHeader.h>
 #include "SynthesisInspector.h"
 #include "../Audio/VocalSynthEngine.h"
 
@@ -91,12 +92,6 @@ void SynthesisInspector::setPatternData(const juce::String& patternName,
     prevButton.setEnabled(patternWords.size() > 1);
     nextButton.setEnabled(patternWords.size() > 1);
     showCurrentWord();
-}
-
-void SynthesisInspector::setPatternName(const juce::String& patternName)
-{
-    currentPatternName = patternName;
-    patternNameLabel.setText("Pattern: " + patternName, juce::dontSendNotification);
 }
 
 void SynthesisInspector::clearPatternData()

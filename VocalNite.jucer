@@ -80,7 +80,6 @@
       <GROUP id="{76630D84-5977-B9C1-D1C0-E16422F36CB4}" name="Projects">
         <FILE id="Af2Acx" name="Project.cpp" compile="1" resource="0" file="Source/Projects/Project.cpp"/>
         <FILE id="R1LJqD" name="Project.h" compile="0" resource="0" file="Source/Projects/Project.h"/>
-        <FILE id="YSxXr8" name="project.vnite" compile="0" resource="1" file="Source/Projects/project.vnite"/>
       </GROUP>
       <GROUP id="{9BC39F5D-4A9D-A7C9-5A15-0FFF1D645DC9}" name="UI">
         <FILE id="FDrUcI" name="ProjectManagerComponent.cpp" compile="1" resource="0"

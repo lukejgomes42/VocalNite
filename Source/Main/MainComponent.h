@@ -3,33 +3,32 @@
 #include "../Animation/StarSystem.h"
 #include "../Animation/GlowLines.h"
 
-//==============================================================================
-/*
-    This component lives inside our window, and this is where you should put all
-    your controls and content.
-*/
+// =============================================================================
+//  MainComponent
+//  Login screen. Hosts Sign Up, Login, and Verify Account buttons over an
+//  animated star-field backdrop. Clicking the title area swaps the text for
+//  the logo image with a sparkle-burst animation.
+// =============================================================================
 class MainComponent : public juce::Component,
     private juce::Timer
 {
 public:
-    //==============================================================================
     MainComponent();
     ~MainComponent() override;
 
+    // Fired on successful login/signup with the authenticated username.
     std::function<void(const juce::String& username)> onAuthenticationSuccess;
 
-    //==============================================================================
     void paint(juce::Graphics&) override;
     void paintOverChildren(juce::Graphics&) override;
     void resized() override;
 
-    // Mouse hover callbacks (for buttons)
-    void mouseEnter(const juce::MouseEvent& event);
-    void mouseExit(const juce::MouseEvent& event);
+    void mouseEnter(const juce::MouseEvent& event) override;
+    void mouseExit(const juce::MouseEvent& event) override;
     void mouseDown(const juce::MouseEvent& event) override;
 
 private:
-    juce::Label titleLabel;
+    juce::Label      titleLabel;
     juce::TextButton signupButton{ "Sign Up" };
     juce::TextButton loginButton{ "Login" };
     juce::TextButton verifyButton{ "Verify Account" };
@@ -37,13 +36,13 @@ private:
     void showAuthDialog(const juce::String& type);
     void showVerifyDialog();
 
-    // Logo swap-in
-    juce::Image logoImage;
-    bool        showLogo = false;
+    // Optional logo image (Resources/logo.png). Falls back to gradient text.
+    juce::Image          logoImage;
+    bool                 showLogo = false;
     juce::Rectangle<int> titleHitArea;
-    void        loadLogoImage();
+    void                 loadLogoImage();
 
-    // Sparkle / flash animation
+    // Sparkle / flash animation triggered when the logo swaps in
     struct Sparkle
     {
         float x = 0.0f, y = 0.0f;
@@ -54,7 +53,7 @@ private:
         juce::Colour colour;
     };
     juce::Array<Sparkle> sparkles;
-    float        logoAlpha = 0.0f;          // 0 -> 1 fade-in for the logo
+    float        logoAlpha = 0.0f;
     bool         flashActive = false;
     juce::uint32 flashStartTimeMs = 0;
 
@@ -62,8 +61,8 @@ private:
     void spawnSparkleBurst(int count);
     void drawSparkle(juce::Graphics& g, const Sparkle& s) const;
 
-    // Animation
-    GlowLines glowLines{ 5 };
+    // Background animation
+    GlowLines  glowLines{ 5 };
     StarSystem starSystem{ 50 };
 
     void timerCallback() override;

@@ -6,7 +6,6 @@
 namespace
 {
     inline float easeOutCubic(float t) { t = juce::jlimit(0.0f, 1.0f, t); float inv = 1.0f - t; return 1.0f - inv * inv * inv; }
-    inline float easeInCubic(float t) { t = juce::jlimit(0.0f, 1.0f, t); return t * t * t; }
     inline float easeOutQuint(float t) { t = juce::jlimit(0.0f, 1.0f, t); float inv = 1.0f - t; return 1.0f - inv * inv * inv * inv * inv; }
 }
 

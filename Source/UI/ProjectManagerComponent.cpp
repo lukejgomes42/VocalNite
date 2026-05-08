@@ -1,16 +1,18 @@
 #include "ProjectManagerComponent.h"
-#include "../Projects/Project.h"
 #include "../Database/DatabaseManager.h"
 #include <libpq-fe.h>
 
-// =========================
-// Modal component for creating a project
-// =========================
+// =============================================================================
+//  CreateProjectModal
+//  Small inline dialog for naming a new project. Launched via
+//  juce::DialogWindow::LaunchOptions so it blocks interaction with the
+//  ProjectManagerComponent until the user confirms or cancels.
+// =============================================================================
 class CreateProjectModal : public juce::Component
 {
 public:
-    CreateProjectModal(std::function<void(const juce::String&)> cb)
-        : callback(cb)
+    explicit CreateProjectModal(std::function<void(const juce::String&)> cb)
+        : callback(std::move(cb))
     {
         addAndMakeVisible(label);
         addAndMakeVisible(nameEditor);
@@ -69,23 +71,22 @@ public:
     }
 
 private:
-    juce::Label label;
+    juce::Label      label;
     juce::TextEditor nameEditor;
-    juce::TextButton okButton, cancelButton;
+    juce::TextButton okButton;
+    juce::TextButton cancelButton;
     std::function<void(const juce::String&)> callback;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(CreateProjectModal)
 };
 
-// =========================
-// ProjectManagerComponent Implementation
-// =========================
+//==============================================================================
 ProjectManagerComponent::ProjectManagerComponent()
 {
     topBar.onLogoutClicked = [this]()
         {
-            if (onLogout)
-                onLogout();
+            if (onLogout) onLogout();
         };
-
     addAndMakeVisible(topBar);
 
     createButton.setButtonText("+ New Project");
@@ -105,7 +106,6 @@ ProjectManagerComponent::ProjectManagerComponent()
     statusLabel.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(statusLabel);
 
-    // Recent projects list
     recentProjectsList.setColour(juce::ListBox::backgroundColourId, juce::Colour(20, 10, 35));
     recentProjectsList.setColour(juce::ListBox::outlineColourId, juce::Colour(60, 40, 90));
     recentProjectsList.setOutlineThickness(1);
@@ -113,18 +113,17 @@ ProjectManagerComponent::ProjectManagerComponent()
     recentProjectsList.setModel(this);
     addAndMakeVisible(recentProjectsList);
 
-    // Educational Mode toggle (hidden by default; shown only for verified edu users)
+    // Educational Mode toggle — hidden by default; shown only for verified edu users
     educationalModeToggle.setButtonText("Educational Mode");
     educationalModeToggle.setColour(juce::ToggleButton::textColourId, juce::Colours::cyan);
     educationalModeToggle.setColour(juce::ToggleButton::tickColourId, juce::Colours::cyan);
-    educationalModeToggle.setColour(juce::ToggleButton::tickDisabledColourId,
-        juce::Colour(60, 60, 80));
-    educationalModeToggle.setToggleState(EducationalModeManager::getInstance().isEnabled(),
-        juce::dontSendNotification);
+    educationalModeToggle.setColour(juce::ToggleButton::tickDisabledColourId, juce::Colour(60, 60, 80));
+    educationalModeToggle.setToggleState(
+        EducationalModeManager::getInstance().isEnabled(), juce::dontSendNotification);
     educationalModeToggle.onClick = [this]()
         {
-            bool newState = educationalModeToggle.getToggleState();
-            EducationalModeManager::getInstance().setEnabled(newState);
+            EducationalModeManager::getInstance().setEnabled(
+                educationalModeToggle.getToggleState());
         };
     educationalModeToggle.setVisible(false);
     addAndMakeVisible(educationalModeToggle);
@@ -137,10 +136,9 @@ ProjectManagerComponent::ProjectManagerComponent()
     educationalModeHint.setVisible(false);
     addAndMakeVisible(educationalModeHint);
 
-    // CREATE
     createButton.onClick = [this]()
         {
-            auto modal = new CreateProjectModal([this](const juce::String& projectName)
+            auto* modal = new CreateProjectModal([this](const juce::String& projectName)
                 {
                     if (projectName.isEmpty())
                     {
@@ -148,7 +146,8 @@ ProjectManagerComponent::ProjectManagerComponent()
                         return;
                     }
 
-                    juce::File projectsFolder = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                    juce::File projectsFolder = juce::File::getSpecialLocation(
+                        juce::File::userDocumentsDirectory)
                         .getChildFile("VocalNite")
                         .getChildFile("Projects");
 
@@ -161,7 +160,7 @@ ProjectManagerComponent::ProjectManagerComponent()
                         return;
                     }
 
-                    int userId = DatabaseManager::get().getUserId(currentUsername);
+                    const int userId = DatabaseManager::get().getUserId(currentUsername);
                     if (currentProject.createNew(projectFolder, projectName, userId))
                     {
                         statusLabel.setText("", juce::dontSendNotification);
@@ -172,17 +171,16 @@ ProjectManagerComponent::ProjectManagerComponent()
                 });
 
             modal->setSize(300, 140);
-            juce::DialogWindow::LaunchOptions options;
-            options.content.setOwned(modal);
-            options.dialogTitle = "New Project";
-            options.dialogBackgroundColour = juce::Colour(15, 15, 25);
-            options.escapeKeyTriggersCloseButton = true;
-            options.useNativeTitleBar = false;
-            options.resizable = false;
-            options.launchAsync();
+            juce::DialogWindow::LaunchOptions opts;
+            opts.content.setOwned(modal);
+            opts.dialogTitle = "New Project";
+            opts.dialogBackgroundColour = juce::Colour(15, 15, 25);
+            opts.escapeKeyTriggersCloseButton = true;
+            opts.useNativeTitleBar = false;
+            opts.resizable = false;
+            opts.launchAsync();
         };
 
-    // OPEN
     openButton.onClick = [this]()
         {
             if (recentProjectNames.isEmpty())
@@ -202,7 +200,8 @@ ProjectManagerComponent::ProjectManagerComponent()
                     {
                         statusLabel.setText("", juce::dontSendNotification);
                         if (onOpenProject)
-                            onOpenProject(recentProjectNames[result - 1], recentProjectIds[result - 1]);
+                            onOpenProject(recentProjectNames[result - 1],
+                                recentProjectIds[result - 1]);
                     }
                 });
         };
@@ -210,16 +209,24 @@ ProjectManagerComponent::ProjectManagerComponent()
     refreshRecentProjects();
 }
 
+ProjectManagerComponent::~ProjectManagerComponent()
+{
+    // Educational Mode is intentionally NOT disabled here. The DAWComponent
+    // reads the manager state on its own construction, so any transition
+    // (logout or open project) picks up the current toggle state correctly.
+}
+
+//==============================================================================
 void ProjectManagerComponent::refreshRecentProjects()
 {
     recentFiles.clear();
     recentProjectNames.clear();
     recentProjectIds.clear();
 
-    int userId = DatabaseManager::get().getUserId(currentUsername);
+    const int userId = DatabaseManager::get().getUserId(currentUsername);
     if (userId < 0) return;
 
-    std::string userIdStr = std::to_string(userId);
+    const std::string userIdStr = std::to_string(userId);
     const char* params[1] = { userIdStr.c_str() };
 
     PGresult* res = PQexecParams(DatabaseManager::get().db(),
@@ -228,7 +235,7 @@ void ProjectManagerComponent::refreshRecentProjects()
 
     if (PQresultStatus(res) == PGRES_TUPLES_OK)
     {
-        int rows = PQntuples(res);
+        const int rows = PQntuples(res);
         for (int i = 0; i < rows; ++i)
         {
             recentProjectIds.add(std::stoi(PQgetvalue(res, i, 0)));
@@ -241,7 +248,9 @@ void ProjectManagerComponent::refreshRecentProjects()
     recentProjectsList.repaint();
 }
 
-// ListBoxModel
+//==============================================================================
+//  ListBoxModel
+//==============================================================================
 int ProjectManagerComponent::getNumRows()
 {
     return recentProjectNames.isEmpty() ? 1 : recentProjectNames.size();
@@ -268,12 +277,11 @@ void ProjectManagerComponent::paintListBoxItem(int rowNumber, juce::Graphics& g,
     g.setColour(juce::Colours::hotpink.withAlpha(0.8f));
     g.fillEllipse(14, height / 2 - 4, 8, 8);
 
-    // Project name
     g.setColour(juce::Colours::white);
     g.setFont(juce::Font(13.0f));
-    g.drawText(recentProjectNames[rowNumber], 32, 0, width - 48, height, juce::Justification::centredLeft);
+    g.drawText(recentProjectNames[rowNumber], 32, 0, width - 48, height,
+        juce::Justification::centredLeft);
 
-    // Separator line
     g.setColour(juce::Colour(40, 25, 60));
     g.drawLine(12, height - 1, width - 12, height - 1, 1.0f);
 }
@@ -281,11 +289,11 @@ void ProjectManagerComponent::paintListBoxItem(int rowNumber, juce::Graphics& g,
 void ProjectManagerComponent::listBoxItemDoubleClicked(int row, const juce::MouseEvent&)
 {
     if (recentProjectNames.isEmpty() || row >= recentProjectNames.size()) return;
-
     if (onOpenProject)
         onOpenProject(recentProjectNames[row], recentProjectIds[row]);
 }
 
+//==============================================================================
 void ProjectManagerComponent::paint(juce::Graphics& g)
 {
     g.fillAll(juce::Colour(15, 15, 25));
@@ -296,22 +304,20 @@ void ProjectManagerComponent::paint(juce::Graphics& g)
         for (int y = 50; y < getHeight(); y += 24)
             g.fillRect(x, y, 1, 1);
 
-    // Card background
+    // Centre card
     auto card = getCentreCardBounds();
     g.setColour(juce::Colour(20, 10, 35));
     g.fillRoundedRectangle(card.toFloat(), 12.0f);
     g.setColour(juce::Colour(60, 40, 90));
     g.drawRoundedRectangle(card.toFloat(), 12.0f, 1.0f);
 
-    // "Recent Projects" header inside card
+    // "Recent Projects" header
     g.setFont(juce::Font(12.0f, juce::Font::bold));
     g.setColour(juce::Colour(150, 100, 180));
     g.drawText("RECENT PROJECTS",
-        card.getX() + 16, card.getY() + 12,
-        card.getWidth() - 32, 20,
+        card.getX() + 16, card.getY() + 12, card.getWidth() - 32, 20,
         juce::Justification::centredLeft);
 
-    // Divider below header
     g.setColour(juce::Colour(60, 40, 90));
     g.drawLine(card.getX() + 16, card.getY() + 36,
         card.getRight() - 16, card.getY() + 36, 1.0f);
@@ -321,33 +327,28 @@ void ProjectManagerComponent::resized()
 {
     if (getWidth() == 0 || getHeight() == 0) return;
 
-    auto area = getLocalBounds();
-    topBar.setBounds(area.removeFromTop(50));
+    topBar.setBounds(getLocalBounds().removeFromTop(50));
 
     auto card = getCentreCardBounds();
 
-    // List box fills most of the card, below the header
-    int listTop = card.getY() + 42;
-    int btnH = 38;
+    const int listTop = card.getY() + 42;
+    const int btnH = 38;
+    const bool showEdu = educationalModeToggle.isVisible();
+    const int eduBlockH = showEdu ? 48 : 0;
 
-    // Reserve space for educational toggle + hint if visible
-    bool showEdu = educationalModeToggle.isVisible();
-    int eduBlockH = showEdu ? 48 : 0;   // toggle row + hint line
-
-    int btnY = card.getBottom() - btnH - 12 - eduBlockH;
-    int listBottom = btnY - 10;
+    const int btnY = card.getBottom() - btnH - 12 - eduBlockH;
+    const int listBottom = btnY - 10;
 
     recentProjectsList.setBounds(card.getX() + 12, listTop,
         card.getWidth() - 24, listBottom - listTop);
 
-    // Buttons side by side at bottom of card
-    int btnW = (card.getWidth() - 48) / 2;
+    const int btnW = (card.getWidth() - 48) / 2;
     createButton.setBounds(card.getX() + 16, btnY, btnW, btnH);
     openButton.setBounds(card.getX() + 16 + btnW + 16, btnY, btnW, btnH);
 
     if (showEdu)
     {
-        int toggleY = btnY + btnH + 8;
+        const int toggleY = btnY + btnH + 8;
         educationalModeToggle.setBounds(card.getX() + 16, toggleY,
             card.getWidth() - 32, 22);
         educationalModeHint.setBounds(card.getX() + 16, toggleY + 22,
@@ -359,13 +360,12 @@ void ProjectManagerComponent::resized()
 
 juce::Rectangle<int> ProjectManagerComponent::getCentreCardBounds() const
 {
-    int cardW = getWidth() > 80 ? std::min(500, getWidth() - 80) : 500;
-    int cardH = getHeight() > 120 ? std::min(380, getHeight() - 120) : 380;
-    int cardX = (getWidth() - cardW) / 2;
-    int cardY = 50 + (getHeight() - 50 - cardH) / 2;
-    return { cardX, cardY, cardW, cardH };
+    const int cardW = juce::jmin(500, juce::jmax(1, getWidth() - 80));
+    const int cardH = juce::jmin(380, juce::jmax(1, getHeight() - 120));
+    return { (getWidth() - cardW) / 2, 50 + (getHeight() - 50 - cardH) / 2, cardW, cardH };
 }
 
+//==============================================================================
 void ProjectManagerComponent::setUsername(const juce::String& name)
 {
     topBar.setUsername(name);
@@ -377,23 +377,21 @@ void ProjectManagerComponent::setUsername(const juce::String& name)
 
 void ProjectManagerComponent::applyUserType()
 {
-    bool isEducational = (currentUserType == "educational");
+    const bool isEducational = (currentUserType == "educational");
 
-    // Toggle only exists for educational users
     educationalModeToggle.setVisible(isEducational);
     educationalModeHint.setVisible(isEducational);
 
     if (!isEducational)
     {
         // A non-edu user must never have ed-mode on (e.g. if they logged out
-        // from an edu session in the same app run, force it off).
+        // from an edu session without closing the app, force it off).
         if (EducationalModeManager::getInstance().isEnabled())
             EducationalModeManager::getInstance().setEnabled(false);
         educationalModeToggle.setToggleState(false, juce::dontSendNotification);
     }
     else
     {
-        // Sync the toggle to whatever the manager's state currently is
         educationalModeToggle.setToggleState(
             EducationalModeManager::getInstance().isEnabled(),
             juce::dontSendNotification);
@@ -401,11 +399,4 @@ void ProjectManagerComponent::applyUserType()
 
     resized();
     repaint();
-}
-
-ProjectManagerComponent::~ProjectManagerComponent()
-{
-    // Turn ed-mode off when this screen is destroyed (i.e. user signs out
-    // or opens a project). Keeps state sane across screen transitions.
-    // DAWComponent re-reads the manager state on its own construction.
 }

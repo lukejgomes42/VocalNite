@@ -341,7 +341,7 @@ float VocalSynthEngine::readSample(const juce::AudioBuffer<float>* buf, int& rea
 
         // ── Legacy loop crossfade (non-sustain phonemes, short slots) ──────
         // Imperfect but adequate for the brief consonant loops (< 1 beat).
-        const int loopFade = std::min(256, len / 4);
+        const int loopFade = juce::jmin(256, len / 4);
         int idx = readPos % len;
         float sample = buf->getSample(0, idx);
 
@@ -366,7 +366,7 @@ float VocalSynthEngine::readSample(const juce::AudioBuffer<float>* buf, int& rea
         float sample = buf->getSample(0, readPos);
 
         // Gentle fade-out over last 512 samples
-        const int fadeLen = std::min(512, len / 4);
+        const int fadeLen = juce::jmin(512, len / 4);
         int distToEnd = len - readPos;
         if (distToEnd < fadeLen && fadeLen > 0)
             sample *= (float)distToEnd / (float)fadeLen;
@@ -451,7 +451,7 @@ bool VocalSynthEngine::renderVoice(Voice& v, float* outL, float* outR, int numSa
         {
             // Soft release (cosine quarter-wave 1→0)
             float t = (float)(slot.samplesPlayed - slot.releaseStart) / (float)slot.releaseLen;
-            t = std::min(t, 1.0f);
+            t = juce::jmin(t, 1.0f);
             envGain = std::cos(t * juce::MathConstants<float>::halfPi);
         }
         sampleIn *= envGain;
@@ -579,13 +579,13 @@ std::shared_ptr<juce::AudioBuffer<float>> VocalSynthEngine::pitchShiftBuffer(
     const juce::AudioBuffer<float>& src, double semitoneShift)
 {
     const int srcLen = src.getNumSamples();
-    const int srcCh = std::max(1, src.getNumChannels());
+    const int srcCh = juce::jmax(1, src.getNumChannels());
 
     if (srcLen <= 0)
         return std::make_shared<juce::AudioBuffer<float>>(srcCh, 0);
 
     const double speedRatio = std::pow(2.0, semitoneShift / 12.0);
-    const int    dstLen = std::max(1, (int)std::llround((double)srcLen / speedRatio));
+    const int    dstLen = juce::jmax(1, (int)std::llround((double)srcLen / speedRatio));
 
     auto dst = std::make_shared<juce::AudioBuffer<float>>(srcCh, dstLen);
     dst->clear();
@@ -763,7 +763,7 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
     for (auto& p : plans) totalWeight += p.weight;
 
     const int oneBeatSamples = (int)(secondsPerBeat * currentSampleRate);
-    const double extraBeats = std::max(0.0, durationBeats - 1.0);
+    const double extraBeats = juce::jmax(0.0, durationBeats - 1.0);
     const int extraSustainSamples = (int)(extraBeats * secondsPerBeat * currentSampleRate);
 
     std::uniform_real_distribution<float> jitterDist(0.92f, 1.08f);
@@ -798,7 +798,7 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
         slotLen = (int)(slotLen * jitterDist(rng));
 
         int minLen = phonemeMinSamples(p.type, currentSampleRate);
-        slotLen = std::max(slotLen, minLen);
+        slotLen = juce::jmax(slotLen, minLen);
 
         const bool isLast = (pi == plans.size() - 1);
         const bool isSustain = ((int)pi == sustainIdx) && extraSustainSamples > 0;
@@ -828,7 +828,7 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
             if (p.buffer != nullptr)
             {
                 const int blen = p.buffer->getNumSamples();
-                const int fade = std::min(256, blen / 4);
+                const int fade = juce::jmin(256, blen / 4);
                 if (fade > 0 && blen > 2 * fade)
                 {
                     slot.loopFadeSamples = fade;
@@ -888,8 +888,8 @@ VocalSynthEngine::Voice VocalSynthEngine::buildVoice(
         if (isTailOfVoice)
             slot.releaseLen = (int)(0.080 * currentSampleRate);   // 80 ms
 
-        slot.releaseLen = std::min(slot.releaseLen, slot.slotLength / 3);
-        slot.attackLen = std::min(slot.attackLen, slot.slotLength / 3);
+        slot.releaseLen = juce::jmin(slot.releaseLen, slot.slotLength / 3);
+        slot.attackLen = juce::jmin(slot.attackLen, slot.slotLength / 3);
         slot.releaseStart = slot.slotLength - slot.releaseLen;
 
         if (slot.isLast)
@@ -989,7 +989,7 @@ bool VocalSynthEngine::loadVoiceBank(const juce::File& voiceBankFolder)
     if (availableNoteFolders.empty())
     {
         // Fallback to legacy hardcoded folders
-        availableNoteFolders = { {57,"A3"}, {60,"C4"}, {65,"F4"} };
+        availableNoteFolders = { {57,"A3"}, {66,"F#4"}, {72,"C5"} };
     }
 
     DBG("VocalSynthEngine: loaded " + juce::String(loaded) + " samples from "
@@ -1078,7 +1078,7 @@ int VocalSynthEngine::gridPitchToMidi(int gridPitch)
         93, 90, 84, 81, 78, 72, 69, 66, 60, 57, 54, 48, 45, 42, 36
     };
     if (gridPitch < 0 || gridPitch >= 15)
-        return 60;   // safe fallback: C4
+        return 60;   // safe fallback: C5
     return kRowMidi[gridPitch];
 }
 
@@ -1098,7 +1098,7 @@ std::string VocalSynthEngine::nearestNoteFolder(int midiPitch,
 
 int VocalSynthEngine::noteNameToMidi(const std::string& name)
 {
-    // Parse names like "C4", "F#4", "A3", "Bb3"
+    // Parse names like "C5", "F#4", "A3", "Bb3"
     if (name.size() < 2) return -1;
     static const int noteBase[] = { 9,11,0,2,4,5,7 }; // A,B,C,D,E,F,G
     char letter = (char)std::toupper((unsigned char)name[0]);
@@ -1109,5 +1109,5 @@ int VocalSynthEngine::noteNameToMidi(const std::string& name)
     else if (i < name.size() && name[i] == 'b') { base -= 1; ++i; }
     if (i >= name.size() || !std::isdigit((unsigned char)name[i])) return -1;
     int octave = name[i] - '0';
-    return (octave + 1) * 12 + base;  // MIDI: C4 = 60
+    return (octave + 1) * 12 + base;  // MIDI: C5 = 60
 }

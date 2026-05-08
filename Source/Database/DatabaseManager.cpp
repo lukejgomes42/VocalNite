@@ -4,22 +4,30 @@
 #include <libpq-fe.h>
 #include <curl/curl.h>
 
+//==============================================================================
+//  SMTP payload helper
+//==============================================================================
 struct EmailPayload
 {
     std::string data;
-    size_t pos = 0;
+    size_t      pos = 0;
 };
 
 static size_t curlReadCallback(char* ptr, size_t size, size_t nmemb, void* userp)
 {
     auto* payload = static_cast<EmailPayload*>(userp);
     size_t available = payload->data.size() - payload->pos;
-    size_t toWrite = (size * nmemb < available) ? size * nmemb : available;    if (toWrite == 0) return 0;
+    size_t toWrite = juce::jmin(size * nmemb, available);
+
+    if (toWrite == 0)
+        return 0;
+
     memcpy(ptr, payload->data.c_str() + payload->pos, toWrite);
     payload->pos += toWrite;
     return toWrite;
 }
 
+//==============================================================================
 DatabaseManager::DatabaseManager()
 {
     pgConnection = PQconnectdb(VocalNiteSecrets::kPostgresConnectionString.c_str());
@@ -45,6 +53,7 @@ DatabaseManager::~DatabaseManager()
     }
 }
 
+//==============================================================================
 void DatabaseManager::testPostgresConnection()
 {
     if (pgConnection && PQstatus(pgConnection) == CONNECTION_OK)
@@ -53,14 +62,15 @@ void DatabaseManager::testPostgresConnection()
         DBG("PostgreSQL is NOT connected!");
 }
 
+//==============================================================================
 bool DatabaseManager::userExists(const juce::String& username)
 {
     if (!pgConnection) return false;
 
-    std::string query = "SELECT COUNT(*) FROM Users WHERE username = $1";
     const char* params[1] = { username.toRawUTF8() };
-
-    PGresult* result = PQexecParams(pgConnection, query.c_str(), 1, nullptr, params, nullptr, nullptr, 0);
+    PGresult* result = PQexecParams(pgConnection,
+        "SELECT COUNT(*) FROM Users WHERE username = $1",
+        1, nullptr, params, nullptr, nullptr, 0);
 
     bool exists = false;
     if (PQresultStatus(result) == PGRES_TUPLES_OK)
@@ -76,10 +86,10 @@ bool DatabaseManager::emailExists(const juce::String& email)
 {
     if (!pgConnection) return false;
 
-    std::string query = "SELECT COUNT(*) FROM Users WHERE email = $1";
     const char* params[1] = { email.toRawUTF8() };
-
-    PGresult* result = PQexecParams(pgConnection, query.c_str(), 1, nullptr, params, nullptr, nullptr, 0);
+    PGresult* result = PQexecParams(pgConnection,
+        "SELECT COUNT(*) FROM Users WHERE email = $1",
+        1, nullptr, params, nullptr, nullptr, 0);
 
     bool exists = false;
     if (PQresultStatus(result) == PGRES_TUPLES_OK)
@@ -91,7 +101,11 @@ bool DatabaseManager::emailExists(const juce::String& email)
     return exists;
 }
 
-bool DatabaseManager::signUp(const juce::String& username, const juce::String& email, const juce::String& password, const juce::String& userType)
+//==============================================================================
+bool DatabaseManager::signUp(const juce::String& username,
+    const juce::String& email,
+    const juce::String& password,
+    const juce::String& userType)
 {
     if (!pgConnection) return false;
 
@@ -107,15 +121,14 @@ bool DatabaseManager::signUp(const juce::String& username, const juce::String& e
         return false;
     }
 
-    // Generate salt and hash password
-    juce::String salt = juce::Uuid().toString();
-    juce::String saltedPassword = password + salt;
+    // Hash password with SHA-256 + per-user UUID salt
+    const juce::String salt = juce::Uuid().toString();
+    const juce::String saltedPassword = password + salt;
     juce::SHA256 sha256(saltedPassword.toUTF8(), saltedPassword.getNumBytesAsUTF8());
-    juce::String passwordHash = sha256.toHexString();
+    const juce::String passwordHash = sha256.toHexString();
 
-    juce::String token = generateToken();
+    const juce::String token = generateToken();
 
-    std::string query = "INSERT INTO Users (username, email, password_hash, salt, user_type, verification_token, email_verified) VALUES ($1, $2, $3, $4, $5, $6, FALSE)";
     const char* params[6] = {
         username.toRawUTF8(),
         email.toRawUTF8(),
@@ -125,56 +138,61 @@ bool DatabaseManager::signUp(const juce::String& username, const juce::String& e
         token.toRawUTF8()
     };
 
-    PGresult* result = PQexecParams(pgConnection, query.c_str(), 6, nullptr, params, nullptr, nullptr, 0);
+    PGresult* result = PQexecParams(pgConnection,
+        "INSERT INTO Users (username, email, password_hash, salt, user_type, "
+        "verification_token, email_verified) VALUES ($1, $2, $3, $4, $5, $6, FALSE)",
+        6, nullptr, params, nullptr, nullptr, 0);
 
-    bool success = PQresultStatus(result) == PGRES_COMMAND_OK;
+    const bool success = PQresultStatus(result) == PGRES_COMMAND_OK;
+
     if (!success)
         DBG("Signup error: " + juce::String(PQerrorMessage(pgConnection)));
     else
         DBG("Signup successful for: " + username);
-    if (userType == "educational")
-        sendVerificationEmail(email, token);
 
     PQclear(result);
+
+    if (success && userType == "educational")
+        sendVerificationEmail(email, token);
+
     return success;
 }
 
+//==============================================================================
 bool DatabaseManager::login(const juce::String& username, const juce::String& password)
 {
     lastLoginError = "";
     if (!pgConnection) return false;
 
-    std::string query = "SELECT password_hash, salt, email_verified, user_type FROM Users WHERE username = $1";
     const char* params[1] = { username.toRawUTF8() };
-
-    PGresult* result = PQexecParams(pgConnection, query.c_str(), 1, nullptr, params, nullptr, nullptr, 0);
+    PGresult* result = PQexecParams(pgConnection,
+        "SELECT password_hash, salt, email_verified, user_type "
+        "FROM Users WHERE username = $1",
+        1, nullptr, params, nullptr, nullptr, 0);
 
     bool success = false;
+
     if (PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) > 0)
     {
-        juce::String storedHash = juce::String(PQgetvalue(result, 0, 0));
-        juce::String salt = juce::String(PQgetvalue(result, 0, 1));
+        const juce::String storedHash = juce::String(PQgetvalue(result, 0, 0));
+        const juce::String salt = juce::String(PQgetvalue(result, 0, 1));
+        const bool         emailVerified = juce::String(PQgetvalue(result, 0, 2)) == "t";
+        const juce::String userType = juce::String(PQgetvalue(result, 0, 3));
 
-        juce::String saltedPassword = password + salt;
-        juce::SHA256 sha256(saltedPassword.toUTF8(), saltedPassword.getNumBytesAsUTF8());
-        juce::String passwordHash = sha256.toHexString();
-
-        juce::String userType = juce::String(PQgetvalue(result, 0, 3));
-        bool emailVerified = juce::String(PQgetvalue(result, 0, 2)) == "t";
         if (userType == "educational" && !emailVerified)
         {
             DBG("Login failed: email not verified");
             lastLoginError = "Please verify your email before logging in.";
-            success = false;
         }
         else
         {
+            const juce::String saltedPassword = password + salt;
+            juce::SHA256 sha256(saltedPassword.toUTF8(), saltedPassword.getNumBytesAsUTF8());
+            const juce::String passwordHash = sha256.toHexString();
+
             success = (passwordHash == storedHash);
             if (success)
-            {
-                lastLoginError = "";
                 DBG("Login successful!");
-            }
             else
             {
                 lastLoginError = "Incorrect username or password.";
@@ -184,22 +202,23 @@ bool DatabaseManager::login(const juce::String& username, const juce::String& pa
     }
     else
     {
-        DBG("Login failed: user not found");
         lastLoginError = "Incorrect username or password.";
+        DBG("Login failed: user not found");
     }
 
     PQclear(result);
     return success;
 }
 
+//==============================================================================
 int DatabaseManager::getUserId(const juce::String& username)
 {
     if (!pgConnection) return -1;
 
-    std::string query = "SELECT user_id FROM Users WHERE username = $1";
     const char* params[1] = { username.toRawUTF8() };
-
-    PGresult* result = PQexecParams(pgConnection, query.c_str(), 1, nullptr, params, nullptr, nullptr, 0);
+    PGresult* result = PQexecParams(pgConnection,
+        "SELECT user_id FROM Users WHERE username = $1",
+        1, nullptr, params, nullptr, nullptr, 0);
 
     int userId = -1;
     if (PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) > 0)
@@ -209,33 +228,33 @@ int DatabaseManager::getUserId(const juce::String& username)
     return userId;
 }
 
+//==============================================================================
 juce::String DatabaseManager::getUserType(const juce::String& username)
 {
     if (!pgConnection || username.isEmpty()) return {};
 
-    std::string query = "SELECT user_type, email_verified FROM Users WHERE username = $1";
     const char* params[1] = { username.toRawUTF8() };
-
-    PGresult* result = PQexecParams(pgConnection, query.c_str(), 1, nullptr, params, nullptr, nullptr, 0);
+    PGresult* result = PQexecParams(pgConnection,
+        "SELECT user_type, email_verified FROM Users WHERE username = $1",
+        1, nullptr, params, nullptr, nullptr, 0);
 
     juce::String userType;
     if (PQresultStatus(result) == PGRES_TUPLES_OK && PQntuples(result) > 0)
     {
-        juce::String type = juce::String(PQgetvalue(result, 0, 0));
-        bool emailVerified = juce::String(PQgetvalue(result, 0, 1)) == "t";
+        const juce::String type = juce::String(PQgetvalue(result, 0, 0));
+        const bool         emailVerified = juce::String(PQgetvalue(result, 0, 1)) == "t";
 
-        // Educational access requires verified email
-        if (type == "educational" && !emailVerified)
-            userType = "normal";   // downgrade to normal if not verified
-        else
-            userType = type;
+        // Educational access requires a verified email; downgrade to normal otherwise.
+        userType = (type == "educational" && !emailVerified) ? "normal" : type;
     }
 
     PQclear(result);
     return userType;
 }
 
-bool DatabaseManager::sendVerificationEmail(const juce::String& email, const juce::String& token)
+//==============================================================================
+bool DatabaseManager::sendVerificationEmail(const juce::String& email,
+    const juce::String& token)
 {
     const std::string gmailUser = VocalNiteSecrets::kGmailUser;
     const std::string gmailPassword = VocalNiteSecrets::kGmailPassword;
@@ -263,7 +282,7 @@ bool DatabaseManager::sendVerificationEmail(const juce::String& email, const juc
     struct curl_slist* recipients = nullptr;
     recipients = curl_slist_append(recipients, email.toRawUTF8());
 
-    std::string fromStr = "<" + gmailUser + ">";
+    const std::string fromStr = "<" + gmailUser + ">";
 
     curl_easy_setopt(curl, CURLOPT_URL, "smtps://smtp.gmail.com:465");
     curl_easy_setopt(curl, CURLOPT_USERNAME, gmailUser.c_str());
@@ -277,7 +296,7 @@ bool DatabaseManager::sendVerificationEmail(const juce::String& email, const juc
     curl_easy_setopt(curl, CURLOPT_READDATA, &payload);
     curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
 
-    CURLcode res = curl_easy_perform(curl);
+    const CURLcode res = curl_easy_perform(curl);
 
     curl_slist_free_all(recipients);
     curl_easy_cleanup(curl);
@@ -292,6 +311,7 @@ bool DatabaseManager::sendVerificationEmail(const juce::String& email, const juc
     return true;
 }
 
+//==============================================================================
 juce::String DatabaseManager::generateToken()
 {
     return juce::Uuid().toString().removeCharacters("-");
@@ -303,10 +323,12 @@ bool DatabaseManager::verifyEmail(const juce::String& token)
 
     const char* params[1] = { token.toRawUTF8() };
     PGresult* result = PQexecParams(pgConnection,
-        "UPDATE Users SET email_verified = TRUE, verification_token = NULL WHERE verification_token = $1",
+        "UPDATE Users SET email_verified = TRUE, verification_token = NULL "
+        "WHERE verification_token = $1",
         1, nullptr, params, nullptr, nullptr, 0);
 
-    bool success = PQresultStatus(result) == PGRES_COMMAND_OK && PQcmdTuples(result) != std::string("0");
+    const bool success = PQresultStatus(result) == PGRES_COMMAND_OK
+        && PQcmdTuples(result) != std::string("0");
     PQclear(result);
     return success;
 }

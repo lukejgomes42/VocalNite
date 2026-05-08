@@ -3,7 +3,9 @@
 #include "../Database/DatabaseManager.h"
 #include <libpq-fe.h>
 
-bool Project::createNew(const juce::File& folder, const juce::String& projectName, int userId)
+bool Project::createNew(const juce::File& folder,
+    const juce::String& projectName,
+    int userId)
 {
     if (!folder.exists())
         folder.createDirectory();
@@ -11,11 +13,13 @@ bool Project::createNew(const juce::File& folder, const juce::String& projectNam
     name = projectName;
     projectFile = folder.getChildFile("project.vnite");
 
-    // Save to database and get project ID
-    std::string userIdStr = std::to_string(userId);
+    // Insert the project row and retrieve its auto-generated ID.
+    const std::string userIdStr = std::to_string(userId);
     const char* params[2] = { projectName.toRawUTF8(), userIdStr.c_str() };
+
     PGresult* res = PQexecParams(DatabaseManager::get().db(),
-        "INSERT INTO Projects (user_id, name, bpm, time_signature) VALUES ($2, $1, 120, '4/4') RETURNING project_id",
+        "INSERT INTO Projects (user_id, name, bpm, time_signature) "
+        "VALUES ($2, $1, 120, '4/4') RETURNING project_id",
         2, nullptr, params, nullptr, nullptr, 0);
 
     if (PQresultStatus(res) == PGRES_TUPLES_OK)
@@ -27,8 +31,8 @@ bool Project::createNew(const juce::File& folder, const juce::String& projectNam
     {
         DBG("Project DB error: " + juce::String(PQerrorMessage(DatabaseManager::get().db())));
     }
-    PQclear(res);
 
+    PQclear(res);
     return save();
 }
 
@@ -37,15 +41,14 @@ bool Project::load(const juce::File& file)
     if (!file.existsAsFile())
         return false;
 
-    auto json = juce::JSON::parse(file);
-
+    const auto json = juce::JSON::parse(file);
     if (!json.isObject())
         return false;
 
     auto* obj = json.getDynamicObject();
     name = obj->getProperty("name").toString();
     projectFile = file;
-    projectId = (int)obj->getProperty("projectId");
+    projectId = static_cast<int>(obj->getProperty("projectId"));
 
     return true;
 }
@@ -57,7 +60,5 @@ bool Project::save()
     obj->setProperty("version", 1);
     obj->setProperty("projectId", projectId);
 
-    juce::var json(obj.get());
-
-    return projectFile.replaceWithText(juce::JSON::toString(json));
+    return projectFile.replaceWithText(juce::JSON::toString(juce::var(obj.get())));
 }
