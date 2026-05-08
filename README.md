@@ -1,0 +1,156 @@
+# VocalNite
+
+A concatenative vocal-synthesis DAW built with C++ and the JUCE framework.
+Write notes on a piano roll, attach lyrics, and the engine sings them back
+using a phoneme-by-phoneme voice bank.
+
+---
+
+## Project Description
+
+VocalNite is a desktop DAW (Digital Audio Workstation) that synthesises
+singing voice from typed lyrics. The user places notes on a piano roll,
+types a word into each note, and the engine:
+
+- Looks up the word in the CMU Pronouncing Dictionary to get its ARPAbet
+  phoneme sequence
+- Matches each phoneme (and diphone transition) to a pre-recorded WAV sample
+  from the active voice bank
+- Applies crossfading, vibrato, timing jitter, and pitch-shifting to produce
+  natural-sounding audio timed to the project BPM
+
+Patterns can be arranged across multiple tracks on a timeline, exported to a 
+16-bit stereo WAV, and saved to a Supabase PostgreSQL database so projects 
+persist across sessions. A fighting-game-style voice bank selector allows 
+hot-swapping between voices mid-session without audio dropout.
+
+An optional Educational Mode, exclusive to verified `.edu` accounts, adds
+cyan-pulse highlights on controls, the Milk-en Female Voicebank, and the 
+SynthesisInspector — a step-by-step panel that shows exactly how each word is broken
+down and rendered.
+
+---
+
+## Team Members
+
+| Name | Primary Contributions |
+|------|-----------------------|
+| [Luke Gomes] | [Database​​, Back-end(Authentication & DAW Skeleton, Piano Roll)​​, UI] |
+| [Nathaniel] | [Synthesis Engine, Back-end(DAW, Project Manager Page, UI)] |
+| [Aaron] | [Educational Mode, Aaron Voicebank] |
+
+---
+
+## Technologies Used
+
+| Technology | Version | Purpose |
+|------------|---------|---------|
+| C++ | 17 | Application language |
+| JUCE | 7.x | Audio, UI, and cross-platform framework |
+| PostgreSQL (Supabase) | 15 | Cloud project/user persistence |
+| libpq | 15.x | Native PostgreSQL wire protocol client |
+| libcurl | 8.x | SMTPS email verification |
+| Visual Studio | 2022 | Build toolchain (Windows) |
+| [CMU Pronouncing Dictionary](https://github.com/cmusphinx/cmudict) | 0.7b | Word-to-ARPAbet phoneme lookup (~130 k entries) |
+
+---
+
+## Installation Instructions
+
+### Prerequisites
+
+Before building, make sure you have all of the following installed or alternative available:
+
+| Requirement | Notes |
+|-------------|-------|
+| Windows 10 or 11 | Only supported platform |
+| Visual Studio 2022 | Requires the **Desktop development with C++** workload |
+| JUCE 7.x | Download free from [juce.com/get-juce](https://juce.com/get-juce/) |
+| Supabase account | Free tier at [supabase.com](https://supabase.com) — used for the database |
+| Gmail account + App Password | Required only for Educational Mode email verification — create an App Password at [myaccount.google.com → Security → App passwords](https://myaccount.google.com/apppasswords) (requires 2-Step Verification)
+
+---
+
+### Step 1 — Clone the repository
+
+```bash
+git clone https://github.com/your-org/vocalnite.git
+cd vocalnite
+```
+
+---
+
+### Step 2 — Configure credentials
+
+Copy the credentials template and fill in your values:
+
+```bash
+cp Source/Database/Secrets.h.template Source/Database/Secrets.h
+```
+
+Open `Source/Database/Secrets.h` and replace the placeholders:
+
+```cpp
+namespace VocalNiteSecrets
+{
+    // From Supabase: Settings → Database → Connection string → URI
+    inline const std::string kPostgresConnectionString =
+        "postgresql://USER:PASSWORD@HOST:PORT/DATABASE";
+
+    // Gmail address and App Password for edu verification emails
+    inline const std::string kGmailUser     = "your-address@gmail.com";
+    inline const std::string kGmailPassword = "xxxx xxxx xxxx xxxx";
+}
+```
+
+> `Secrets.h` is listed in `.gitignore` — never commit it.
+
+---
+
+### Step 3 — Create the Supabase database
+
+1. Sign in to [supabase.com](https://supabase.com) and create a new project.
+2. Go to **Settings → Database → Connection string → URI** and copy the connection string into `Secrets.h`.
+3. Open the **SQL Editor** and run the following schema:
+
+### Step 4 — Build
+
+1. Open `VocalNite.jucer` in **Projucer**.
+2. Set the JUCE path to your local JUCE installation if prompted.
+3. Under **Exporters → Visual Studio 2022**, ensure the header and library search paths include the locations where you installed libpq and libcurl (wherever `libpq-fe.h` and `curl/curl.h` live on your machine).
+4. Click **Save and Open in IDE**.
+5. Build the solution in Visual Studio (`Ctrl+Shift+B`).
+6. Copy `libpq.dll` and `libcurl.dll` into the build output folder next to the `.exe`:
+   ```
+   Builds/VisualStudio2022/x64/Debug/libpq.dll
+   Builds/VisualStudio2022/x64/Debug/libcurl.dll
+   ```
+
+---
+
+## Running the Application
+
+1. Launch `VocalNite.exe`.
+2. **Create an account** — click **Sign Up**, enter a username, email, and password. Using a `.edu` email creates an Educational account and triggers a verification email.
+3. **Log in** — click **Login** and enter your credentials. Educational accounts must verify their email first (use the **Verify Account** button and paste the token from your inbox).
+4. **Create a project** — click **+ New Project** on the dashboard, enter a name, and click Create.
+5. **Open the DAW** — double-click a project from the list.
+6. **Add a pattern** — click **+ Add Pattern** in the left panel. Double-click the pattern to open the piano roll.
+7. **Place notes and lyrics** — click an empty cell to place a note, type a word into the inline editor, and press Enter to save.
+8. **Arrange** — drag patterns from the browser onto a track row to place clips on the timeline.
+9. **Play** — press the Play button in the transport bar. The voice bank loads in the background — transport controls un-dim once loading finishes (a few seconds on a typical SSD).
+10. **Export** — File → Export As to render the full timeline to a 16-bit stereo WAV file.
+
+---
+
+## Acknowledgements
+
+- **[CMU Pronouncing Dictionary](https://github.com/cmusphinx/cmudict)** — developed and maintained by Carnegie Mellon University. Used for word-to-ARPAbet phoneme lookup.
+- **[milk-en](https://github.com/oxygen-dioxide/milk-en)** by [oxygen-dioxide](https://github.com/oxygen-dioxide) — the female English UTAU voice bank included as the second selectable voice. Used under its repository license.
+- **[JUCE](https://juce.com)** — cross-platform C++ framework for audio and UI.
+
+---
+
+## License
+
+See `LICENSE` for details.
