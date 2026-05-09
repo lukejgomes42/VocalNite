@@ -108,9 +108,3 @@ Piano roll — 15-row note grid with inline lyric editor
 - **[CMU Pronouncing Dictionary](https://github.com/cmusphinx/cmudict)** — developed and maintained by Carnegie Mellon University. Used for word-to-ARPAbet phoneme lookup.
 - **[milk-en](https://github.com/oxygen-dioxide/milk-en)** by [oxygen-dioxide](https://github.com/oxygen-dioxide) — the female English UTAU voice bank included as the second selectable voice. Used under its repository license.
 - **[JUCE](https://juce.com)** — cross-platform C++ framework for audio and UI.
-
----
-
-## License
-
-See `LICENSE` for details.
