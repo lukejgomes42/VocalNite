@@ -45,10 +45,10 @@ down and rendered.
 
 | Technology | Version | Purpose |
 |------------|---------|---------|
-| C++ | 17 | Application language |
-| JUCE | 7.x | Audio, UI, and cross-platform framework |
-| PostgreSQL (Supabase) | 15 | Cloud project/user persistence |
-| libpq | 15.x | Native PostgreSQL wire protocol client |
+| C++ | 19.5 | Application language |
+| JUCE | 8.x | Audio, UI, and cross-platform framework |
+| PostgreSQL (Supabase) | 18 | Cloud project/user persistence |
+| libpq | 18.x | Native PostgreSQL wire protocol client |
 | libcurl | 8.x | SMTPS email verification |
 | Visual Studio | 2022 | Build toolchain (Windows) |
 | [CMU Pronouncing Dictionary](https://github.com/cmusphinx/cmudict) | 0.7b | Word-to-ARPAbet phoneme lookup (~130 k entries) |
@@ -59,78 +59,24 @@ down and rendered.
 
 ### Prerequisites
 
-Before building, make sure you have all of the following installed or alternative available:
+Before downloading, make sure you have all of the following installed or available:
 
 | Requirement | Notes |
 |-------------|-------|
 | Windows 10 or 11 | Only supported platform |
-| Visual Studio 2022 | Requires the **Desktop development with C++** workload |
-| JUCE 7.x | Download free from [juce.com/get-juce](https://juce.com/get-juce/) |
-| Supabase account | Free tier at [supabase.com](https://supabase.com) — used for the database |
-| Gmail account + App Password | Required only for Educational Mode email verification — create an App Password at [myaccount.google.com → Security → App passwords](https://myaccount.google.com/apppasswords) (requires 2-Step Verification)
+| Gmail account + App Password | Required only for Educational Mode email verification
 
 ---
 
-### Step 1 — Clone the repository
+### Step 1 — Download the Release.zip file
 
-```bash
-git clone https://github.com/your-org/vocalnite.git
-cd vocalnite
-```
-
----
-
-### Step 2 — Configure credentials
-
-Copy the credentials template and fill in your values:
-
-```bash
-cp Source/Database/Secrets.h.template Source/Database/Secrets.h
-```
-
-Open `Source/Database/Secrets.h` and replace the placeholders:
-
-```cpp
-namespace VocalNiteSecrets
-{
-    // From Supabase: Settings → Database → Connection string → URI
-    inline const std::string kPostgresConnectionString =
-        "postgresql://USER:PASSWORD@HOST:PORT/DATABASE";
-
-    // Gmail address and App Password for edu verification emails
-    inline const std::string kGmailUser     = "your-address@gmail.com";
-    inline const std::string kGmailPassword = "xxxx xxxx xxxx xxxx";
-}
-```
-
-> `Secrets.h` is listed in `.gitignore` — never commit it.
-
----
-
-### Step 3 — Create the Supabase database
-
-1. Sign in to [supabase.com](https://supabase.com) and create a new project.
-2. Go to **Settings → Database → Connection string → URI** and copy the connection string into `Secrets.h`.
-3. Open the **SQL Editor** and run the following schema:
-
-### Step 4 — Build
-
-1. Open `VocalNite.jucer` in **Projucer**.
-2. Set the JUCE path to your local JUCE installation if prompted.
-3. Under **Exporters → Visual Studio 2022**, ensure the header and library search paths include the locations where you installed libpq and libcurl (wherever `libpq-fe.h` and `curl/curl.h` live on your machine).
-4. Click **Save and Open in IDE**.
-5. Build the solution in Visual Studio (`Ctrl+Shift+B`).
-6. Copy `libpq.dll` and `libcurl.dll` into the build output folder next to the `.exe`:
-   ```
-   Builds/VisualStudio2022/x64/Debug/libpq.dll
-   Builds/VisualStudio2022/x64/Debug/libcurl.dll
-   ```
+### Step 2 — Unzip the Release.zip file
 
 ---
 
 ## Running the Application
 
-1. Launch `VocalNite.exe`.
+1. Launch `VocalNite.exe` in Release/App/
 2. **Create an account** — click **Sign Up**, enter a username, email, and password. Using a `.edu` email creates an Educational account and triggers a verification email.
 3. **Log in** — click **Login** and enter your credentials. Educational accounts must verify their email first (use the **Verify Account** button and paste the token from your inbox).
 4. **Create a project** — click **+ New Project** on the dashboard, enter a name, and click Create.
